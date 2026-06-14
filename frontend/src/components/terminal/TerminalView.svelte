@@ -32,6 +32,115 @@
     return new TextDecoder().decode(bytes);
   }
 
+  function sendInput(data: string) {
+    if (socket?.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: 'input', data }));
+    }
+  }
+
+  function warnClipboard(message: string) {
+    console.warn(`[HomePanel] ${message}`);
+  }
+
+  function stripBracketedPasteWrappers(text: string) {
+    return text.split('\u001b[200~').join('').split('\u001b[201~').join('');
+  }
+
+  async function writeClipboardText(text: string) {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch (error) {
+      console.warn(error);
+    }
+
+    try {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.setAttribute('readonly', 'true');
+      textarea.style.position = 'fixed';
+      textarea.style.left = '-9999px';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      const copied = document.execCommand('copy');
+      textarea.remove();
+      return copied;
+    } catch (error) {
+      console.warn(error);
+      return false;
+    }
+  }
+
+  async function readClipboardTextFallback() {
+    try {
+      if (navigator.clipboard?.readText) {
+        return await navigator.clipboard.readText();
+      }
+    } catch (error) {
+      console.warn(error);
+    }
+    return '';
+  }
+
+  function isCopyShortcut(event: KeyboardEvent) {
+    return (event.ctrlKey || event.metaKey) && event.code === 'KeyC';
+  }
+
+  function isPasteShortcut(event: KeyboardEvent) {
+    return (
+      ((event.ctrlKey || event.metaKey) && event.code === 'KeyV') ||
+      (event.shiftKey && event.code === 'Insert')
+    );
+  }
+
+  function handleCopyEvent(event: ClipboardEvent) {
+    if (!instance) return;
+    const selection = instance.getSelection();
+    if (!selection) return;
+
+    const clipboardText = selection.trimEnd();
+    if (event.clipboardData) {
+      event.preventDefault();
+      event.clipboardData.setData('text/plain', clipboardText);
+    }
+    instance.clearSelection();
+    instance.focus();
+
+    void writeClipboardText(clipboardText).catch((error) => {
+      warnClipboard(
+        'Clipboard copy failed. Browser clipboard access may require HTTPS or localhost.',
+      );
+      console.warn(error);
+    });
+  }
+
+  async function handlePasteEvent(event: ClipboardEvent) {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const fromEvent = event.clipboardData?.getData('text/plain') ?? '';
+    const directPaste = stripBracketedPasteWrappers(fromEvent);
+    if (directPaste) {
+      sendInput(directPaste);
+      instance?.focus();
+      return;
+    }
+
+    const fallback = stripBracketedPasteWrappers(await readClipboardTextFallback());
+    if (fallback) {
+      sendInput(fallback);
+      instance?.focus();
+      return;
+    }
+
+    warnClipboard(
+      'Clipboard paste failed. Browser clipboard access may require HTTPS or localhost.',
+    );
+  }
+
   function connect() {
     if (disposed) return;
     receivedHandshake = false;
@@ -171,12 +280,27 @@
     });
     instance.loadAddon(fitAddon);
     instance.open(host);
+    instance.attachCustomKeyEventHandler((event) => {
+      if (event.type !== 'keydown') return true;
+      const term = instance;
+      if (!term) return true;
+
+      if (isCopyShortcut(event)) {
+        return !term.getSelection();
+      }
+
+      if (isPasteShortcut(event)) {
+        return false;
+      }
+
+      return true;
+    });
+    host.addEventListener('copy', handleCopyEvent, true);
+    host.addEventListener('paste', handlePasteEvent, true);
     scheduleFit();
     connect();
     instance.onData(
-      (data) =>
-        socket?.readyState === WebSocket.OPEN &&
-        socket.send(JSON.stringify({ type: 'input', data })),
+      (data) => sendInput(data),
     );
     resizeObserver = new ResizeObserver(() => scheduleFit());
     resizeObserver.observe(host);
@@ -190,6 +314,8 @@
       clearFrameSnap();
       resizeObserver?.disconnect();
       window.removeEventListener('resize', scheduleFit);
+      host?.removeEventListener('copy', handleCopyEvent, true);
+      host?.removeEventListener('paste', handlePasteEvent, true);
       socket?.close();
       instance?.dispose();
       fitAddon = null;
