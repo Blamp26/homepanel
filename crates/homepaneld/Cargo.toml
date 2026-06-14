@@ -1,0 +1,26 @@
+[package]
+name = "homepaneld"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+argon2.workspace = true
+axum = { workspace = true, features = ["ws"] }
+base64.workspace = true
+chrono.workspace = true
+futures.workspace = true
+homepanel-agent = { path = "../homepanel-agent" }
+homepanel-core = { path = "../homepanel-core" }
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+
+[build-dependencies]

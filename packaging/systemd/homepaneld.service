@@ -1,0 +1,14 @@
+[Unit]
+Description=HomePanel Web/API daemon
+After=network.target homepanel-agent.service
+Requires=homepanel-agent.service
+
+[Service]
+User=homepanel
+Group=homepanel
+ExecStart=/usr/bin/homepaneld --config /etc/homepanel/config.toml
+Restart=on-failure
+WorkingDirectory=/var/lib/homepanel
+
+[Install]
+WantedBy=multi-user.target
