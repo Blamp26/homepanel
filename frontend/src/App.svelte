@@ -143,11 +143,11 @@
   function serviceListStatusLabel(service: ServiceSummary) {
     const active = service.active.toLowerCase();
     const sub = service.sub.toLowerCase();
-    if (sub === 'running') return 'RUNNING';
-    if (active === 'failed' || sub === 'failed') return 'FAILED';
-    if (sub === 'exited') return 'EXITED';
-    if (active === 'inactive' || sub === 'dead') return 'INACTIVE';
-    return (sub || active || 'unknown').toUpperCase();
+    if (sub === 'running') return 'RUN';
+    if (active === 'failed' || sub === 'failed') return 'FAIL';
+    if (sub === 'exited') return 'EXIT';
+    if (active === 'inactive' || sub === 'dead') return 'OFF';
+    return (sub || active || 'UNK').toUpperCase();
   }
 
   function serviceListStatusTone(service: ServiceSummary) {
@@ -698,47 +698,49 @@
       {:else if page === 'services'}
         <section class="services-page" aria-label="Systemd services">
           <div class="service-panel">
-            <div class="panel-head">
-              <div>
-                <h2>Services</h2>
-                <p>Manage systemd units on this host</p>
-              </div>
-              <button
-                class="primary-button compact"
-                type="button"
-                data-testid="services-refresh"
-                on:click={loadServices}
-              >
-                Refresh
-              </button>
-            </div>
-
-            <div class="service-tools">
-              <label class="service-search-label" for="service-search">
-                <span class="sr-only">Search services</span>
-                <input
-                  id="service-search"
-                  data-testid="service-search"
-                  type="search"
-                  placeholder="Search services..."
-                  bind:value={serviceSearch}
-                />
-              </label>
-
-              <div class="segmented service-filters" role="tablist" aria-label="Service filters">
-                {#each serviceFilters as filter (filter.value)}
-                  <button
-                    type="button"
-                    class:active={serviceFilter === filter.value}
-                    on:click={() => (serviceFilter = filter.value)}
-                  >
-                    {filter.label}
-                  </button>
-                {/each}
+            <div class="service-panel-top">
+              <div class="panel-head">
+                <div>
+                  <h2>Services</h2>
+                  <p>Manage systemd units on this host</p>
+                </div>
+                <button
+                  class="primary-button compact"
+                  type="button"
+                  data-testid="services-refresh"
+                  on:click={loadServices}
+                >
+                  Refresh
+                </button>
               </div>
 
-              <div class="service-count" data-testid="service-count">
-                {visibleServices.length} of {services.length} services
+              <div class="service-tools">
+                <label class="service-search-label" for="service-search">
+                  <span class="sr-only">Search services</span>
+                  <input
+                    id="service-search"
+                    data-testid="service-search"
+                    type="search"
+                    placeholder="Search services..."
+                    bind:value={serviceSearch}
+                  />
+                </label>
+
+                <div class="segmented service-filters" role="tablist" aria-label="Service filters">
+                  {#each serviceFilters as filter (filter.value)}
+                    <button
+                      type="button"
+                      class:active={serviceFilter === filter.value}
+                      on:click={() => (serviceFilter = filter.value)}
+                    >
+                      {filter.label}
+                    </button>
+                  {/each}
+                </div>
+
+                <div class="service-count" data-testid="service-count">
+                  {visibleServices.length} of {services.length} services
+                </div>
               </div>
             </div>
 
@@ -771,19 +773,20 @@
                             class="service-row"
                             data-testid={`service-row-${serviceTestId(service.name)}`}
                             on:click={() => selectService(service.name)}
+                            title={service.name}
                           >
-                            <div class="service-row-main">
-                              <span class="service-row-name">{service.name}</span>
-                              <span class="service-row-description">
+                            <span class="service-row-name">{service.name}</span>
+                            <div class="service-row-meta">
+                              <span class="service-row-description" title={service.description}>
                                 {service.description}
                               </span>
+                              <span
+                                class={`status-pill ${serviceListStatusTone(service)}`}
+                                data-testid={`service-status-${serviceTestId(service.name)}`}
+                              >
+                                {serviceListStatusLabel(service)}
+                              </span>
                             </div>
-                            <span
-                              class={`status-pill ${serviceListStatusTone(service)}`}
-                              data-testid={`service-status-${serviceTestId(service.name)}`}
-                            >
-                              {serviceListStatusLabel(service)}
-                            </span>
                           </button>
                         {/each}
                       </div>
@@ -808,19 +811,20 @@
                             class="service-row"
                             data-testid={`service-row-${serviceTestId(service.name)}`}
                             on:click={() => selectService(service.name)}
+                            title={service.name}
                           >
-                            <div class="service-row-main">
-                              <span class="service-row-name">{service.name}</span>
-                              <span class="service-row-description">
+                            <span class="service-row-name">{service.name}</span>
+                            <div class="service-row-meta">
+                              <span class="service-row-description" title={service.description}>
                                 {service.description}
                               </span>
+                              <span
+                                class={`status-pill ${serviceListStatusTone(service)}`}
+                                data-testid={`service-status-${serviceTestId(service.name)}`}
+                              >
+                                {serviceListStatusLabel(service)}
+                              </span>
                             </div>
-                            <span
-                              class={`status-pill ${serviceListStatusTone(service)}`}
-                              data-testid={`service-status-${serviceTestId(service.name)}`}
-                            >
-                              {serviceListStatusLabel(service)}
-                            </span>
                           </button>
                         {/each}
                       </div>
@@ -837,19 +841,20 @@
                           class="service-row"
                           data-testid={`service-row-${serviceTestId(service.name)}`}
                           on:click={() => selectService(service.name)}
+                          title={service.name}
                         >
-                          <div class="service-row-main">
-                            <span class="service-row-name">{service.name}</span>
-                            <span class="service-row-description">
+                          <span class="service-row-name">{service.name}</span>
+                          <div class="service-row-meta">
+                            <span class="service-row-description" title={service.description}>
                               {service.description}
                             </span>
+                            <span
+                              class={`status-pill ${serviceListStatusTone(service)}`}
+                              data-testid={`service-status-${serviceTestId(service.name)}`}
+                            >
+                              {serviceListStatusLabel(service)}
+                            </span>
                           </div>
-                          <span
-                            class={`status-pill ${serviceListStatusTone(service)}`}
-                            data-testid={`service-status-${serviceTestId(service.name)}`}
-                          >
-                            {serviceListStatusLabel(service)}
-                          </span>
                         </button>
                       {/each}
                     </div>
