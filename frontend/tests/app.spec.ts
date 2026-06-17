@@ -20,6 +20,27 @@ type AuthFixture = {
   username: string | null;
 };
 
+type ServiceFixture = {
+  name: string;
+  load: string;
+  active: string;
+  sub: string;
+  description: string;
+  details: {
+    name: string;
+    load_state: string;
+    active_state: string;
+    sub_state: string;
+    unit_file_state: string;
+    description: string;
+    fragment_path: string | null;
+    main_pid: number;
+    memory_current: number | null;
+    cpu_usage_nsec: number | null;
+  };
+  logs: string[];
+};
+
 async function requireBackend(request: APIRequestContext) {
   let response;
   try {
@@ -202,6 +223,7 @@ async function mockAuthenticatedShell(
       failWrite?: boolean;
     };
     auth?: AuthFixture;
+    services?: ServiceFixture[];
   },
 ) {
   await installMockWebSocket(page, { scrollback: options?.scrollback });
@@ -215,6 +237,8 @@ async function mockAuthenticatedShell(
     };
 
   let state = terminals.slice();
+  const serviceState = options?.services ?? [];
+  const serviceActions: string[] = [];
 
   await page.route('/api/auth/status', async (route) => {
     await route.fulfill({
@@ -270,10 +294,78 @@ async function mockAuthenticatedShell(
     await route.fallback();
   });
 
+  await page.route('**/api/services**', async (route) => {
+    const url = new URL(route.request().url());
+    const method = route.request().method();
+    const serviceName = decodeURIComponent(
+      url.pathname.split('/').filter(Boolean).at(2) ?? '',
+    );
+
+    if (method === 'GET' && url.pathname === '/api/services') {
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          items: serviceState.map(
+            ({ name, load, active, sub, description }) => ({
+              name,
+              load,
+              active,
+              sub,
+              description,
+            }),
+          ),
+        }),
+      });
+      return;
+    }
+
+    if (method === 'GET' && url.pathname.startsWith('/api/services/')) {
+      if (url.pathname.endsWith('/logs')) {
+        const service = serviceState.find(({ name }) => name === serviceName);
+        await route.fulfill({
+          contentType: 'application/json',
+          body: JSON.stringify({ items: service?.logs ?? [] }),
+        });
+        return;
+      }
+
+      const service = serviceState.find(({ name }) => name === serviceName);
+      if (!service) {
+        await route.fulfill({
+          status: 404,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: { code: 'not_found', message: 'not found' } }),
+        });
+        return;
+      }
+
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify(service.details),
+      });
+      return;
+    }
+
+    if (method === 'POST' && url.pathname.startsWith('/api/services/')) {
+      serviceActions.push(`${method} ${url.pathname}`);
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ ok: true }),
+      });
+      return;
+    }
+
+    await route.fallback();
+  });
+
   await page.goto('/');
   if (authState.authenticated) {
     await expect(page.getByRole('heading', { name: 'Terminals' })).toBeVisible();
   }
+
+  return {
+    getServiceActions: () => serviceActions.slice(),
+  };
 }
 
 async function dispatchPasteText(
@@ -416,6 +508,86 @@ test('invalid session shows login, not setup', async ({ page, request }) => {
 
   await expect(page.getByText('Sign in to manage this host.')).toBeVisible();
   await expect(page.getByText('Initial setup')).toHaveCount(0);
+});
+
+test('services page opens and manages systemd units', async ({
+  page,
+  request,
+}) => {
+  await requireBackend(request);
+  const shell = await mockAuthenticatedShell(
+    page,
+    [],
+    {
+      services: [
+        {
+          name: 'homepaneld.service',
+          load: 'loaded',
+          active: 'active',
+          sub: 'running',
+          description: 'HomePanel daemon',
+          details: {
+            name: 'homepaneld.service',
+            load_state: 'loaded',
+            active_state: 'active',
+            sub_state: 'running',
+            unit_file_state: 'enabled',
+            description: 'HomePanel daemon',
+            fragment_path: '/usr/lib/systemd/system/homepaneld.service',
+            main_pid: 1234,
+            memory_current: 1048576,
+            cpu_usage_nsec: 2048,
+          },
+          logs: ['2026-06-17 10:00:00 booted', '2026-06-17 10:01:00 ready'],
+        },
+        {
+          name: 'ssh.service',
+          load: 'loaded',
+          active: 'inactive',
+          sub: 'dead',
+          description: 'OpenSSH server',
+          details: {
+            name: 'ssh.service',
+            load_state: 'loaded',
+            active_state: 'inactive',
+            sub_state: 'dead',
+            unit_file_state: 'enabled',
+            description: 'OpenSSH server',
+            fragment_path: '/usr/lib/systemd/system/ssh.service',
+            main_pid: 0,
+            memory_current: null,
+            cpu_usage_nsec: null,
+          },
+          logs: ['2026-06-17 09:59:00 stopping'],
+        },
+      ],
+    },
+  );
+
+  await page.getByRole('button', { name: 'Services' }).click();
+
+  await expect(
+    page
+      .getByLabel('Systemd services')
+      .getByRole('heading', { level: 2, name: 'Services' }),
+  ).toBeVisible();
+  await expect(page.getByTestId('service-row-homepaneld-service')).toBeVisible();
+  await expect(page.getByTestId('service-row-ssh-service')).toBeVisible();
+  await expect(page.getByTestId('service-details-panel')).toContainText(
+    'homepaneld.service',
+  );
+  await expect(page.getByTestId('service-logs')).toContainText('booted');
+
+  await page.getByTestId('service-row-ssh-service').click();
+  await expect(page.getByTestId('service-details-panel')).toContainText(
+    'ssh.service',
+  );
+  await expect(page.getByTestId('service-logs')).toContainText('stopping');
+
+  await page.getByRole('button', { name: 'Restart' }).click();
+  await expect.poll(() => shell.getServiceActions()).toContain(
+    'POST /api/services/ssh.service/restart',
+  );
 });
 
 test('authenticated app shell visual smoke @visual', async ({

@@ -10,6 +10,16 @@
     listTerminals,
     type TerminalSummary,
   } from './api/terminals';
+  import {
+    getService,
+    getServiceLogs,
+    listServices,
+    restartService,
+    startService,
+    stopService,
+    type ServiceDetails,
+    type ServiceSummary,
+  } from './api/services';
   import { login, logout, setup, status as authStatus } from './api/auth';
 
   type Page =
@@ -26,7 +36,7 @@
       { value: 'terminals', label: 'Terminals', state: 'ready' },
       { value: 'dashboard', label: 'Overview', state: 'ready' },
       { value: 'files', label: 'Files', state: 'soon' },
-      { value: 'services', label: 'Services', state: 'soon' },
+      { value: 'services', label: 'Services', state: 'ready' },
       { value: 'logs', label: 'Logs', state: 'soon' },
       { value: 'game servers', label: 'Game servers', state: 'soon' },
       { value: 'settings', label: 'Settings', state: 'soon' },
@@ -45,6 +55,17 @@
   let error = '';
   let terminalError = '';
   let killingTerminalId: string | null = null;
+  let services: ServiceSummary[] = [];
+  let servicesLoading = false;
+  let servicesError = '';
+  let serviceDetails: ServiceDetails | null = null;
+  let serviceDetailsLoading = false;
+  let serviceLogs: string[] = [];
+  let serviceLogsLoading = false;
+  let serviceActionLoading: 'start' | 'stop' | 'restart' | null = null;
+  let serviceActionError = '';
+  let serviceError = '';
+  let selectedServiceName: string | null = null;
 
   async function refresh() {
     terminalError = '';
@@ -72,6 +93,19 @@
     terminalError = message;
   }
 
+  function serviceTone(value: string | undefined) {
+    const normalized = value?.toLowerCase() ?? '';
+    if (normalized.includes('active') || normalized.includes('running'))
+      return 'good';
+    if (
+      normalized.includes('failed') ||
+      normalized.includes('inactive') ||
+      normalized.includes('dead')
+    )
+      return 'bad';
+    return 'neutral';
+  }
+
   function isSelectableTerminal(status: string | undefined) {
     const value = status?.toLowerCase() ?? '';
     return value !== 'exited' && value !== 'failed';
@@ -90,6 +124,92 @@
       nextTerminals.find((terminal) => isSelectableTerminal(terminal.status))
         ?.id ?? null
     );
+  }
+
+  function serviceTestId(name: string) {
+    return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  }
+
+  async function loadSelectedService(name: string) {
+    serviceDetailsLoading = true;
+    serviceLogsLoading = true;
+    serviceError = '';
+    try {
+      const [details, logs] = await Promise.all([
+        getService(name),
+        getServiceLogs(name),
+      ]);
+      serviceDetails = details;
+      serviceLogs = logs.items;
+    } catch (err) {
+      serviceError = err instanceof Error ? err.message : String(err);
+      serviceDetails = null;
+      serviceLogs = [];
+    } finally {
+      serviceDetailsLoading = false;
+      serviceLogsLoading = false;
+    }
+  }
+
+  async function loadServices() {
+    if (servicesLoading) return;
+    servicesLoading = true;
+    servicesError = '';
+    try {
+      const response = await listServices();
+      services = response.items;
+      const preferred = selectedServiceName
+        ? response.items.find((service) => service.name === selectedServiceName)
+        : null;
+      selectedServiceName = preferred?.name ?? response.items[0]?.name ?? null;
+      if (selectedServiceName) {
+        await loadSelectedService(selectedServiceName);
+      } else {
+        serviceDetails = null;
+        serviceLogs = [];
+      }
+    } catch (err) {
+      servicesError = err instanceof Error ? err.message : String(err);
+      services = [];
+      selectedServiceName = null;
+      serviceDetails = null;
+      serviceLogs = [];
+    } finally {
+      servicesLoading = false;
+    }
+  }
+
+  async function selectPage(next: Page) {
+    page = next;
+    if (next === 'services') {
+      await loadServices();
+    }
+  }
+
+  async function selectService(name: string) {
+    selectedServiceName = name;
+    await loadSelectedService(name);
+  }
+
+  async function runServiceAction(action: 'start' | 'stop' | 'restart') {
+    if (!selectedServiceName) return;
+
+    serviceActionLoading = action;
+    serviceActionError = '';
+    try {
+      if (action === 'start') {
+        await startService(selectedServiceName);
+      } else if (action === 'stop') {
+        await stopService(selectedServiceName);
+      } else {
+        await restartService(selectedServiceName);
+      }
+      await loadServices();
+    } catch (err) {
+      serviceActionError = err instanceof Error ? err.message : String(err);
+    } finally {
+      serviceActionLoading = null;
+    }
   }
 
   async function syncAuthState() {
@@ -186,6 +306,12 @@
     user = null;
     terminals = [];
     activeTerminalId = null;
+    services = [];
+    selectedServiceName = null;
+    serviceDetails = null;
+    serviceLogs = [];
+    servicesError = '';
+    serviceError = '';
     await syncAuthState();
   }
 
@@ -210,6 +336,8 @@
   $: visibleTerminals = terminals.filter((terminal) =>
     isSelectableTerminal(terminal.status),
   );
+  $: activeService =
+    services.find((service) => service.name === selectedServiceName) ?? null;
   $: pageTitle =
     pages.find((item) => item.value === page)?.label ?? 'HomePanel';
 </script>
@@ -277,10 +405,10 @@
 
       <nav class="primary-nav" aria-label="Primary">
         {#each pages as item (item.value)}
-            <button
+          <button
             type="button"
             class:active={page === item.value}
-            on:click={() => (page = item.value)}
+            on:click={() => selectPage(item.value)}
           >
             <span>{item.label}</span>
             {#if item.state === 'soon'}
@@ -453,6 +581,179 @@
               <strong>{activeTerminal?.name ?? 'None'}</strong>
             </article>
           </div>
+        </section>
+      {:else if page === 'services'}
+        <section class="services-page" aria-label="Systemd services">
+          <div class="service-panel">
+            <div class="panel-head">
+              <div>
+                <h2>Services</h2>
+                <p>Manage systemd units on this host</p>
+              </div>
+              <button
+                class="primary-button compact"
+                type="button"
+                data-testid="services-refresh"
+                on:click={loadServices}
+              >
+                Refresh
+              </button>
+            </div>
+
+            {#if servicesLoading && services.length === 0}
+              <div class="panel-placeholder">Loading services...</div>
+            {:else if servicesError}
+              <div class="notice error" role="alert">{servicesError}</div>
+            {:else}
+              <div class="service-list" data-testid="service-list">
+                {#if services.length === 0}
+                  <div class="panel-placeholder">No service units found.</div>
+                {:else}
+                  {#each services as service (service.name)}
+                    <button
+                      type="button"
+                      class:active={selectedServiceName === service.name}
+                      class="service-row"
+                      data-testid={`service-row-${serviceTestId(service.name)}`}
+                      on:click={() => selectService(service.name)}
+                    >
+                      <div class="service-row-top">
+                        <span class="service-row-name">{service.name}</span>
+                        <span
+                          class={`service-pill ${serviceTone(service.active)}`}
+                        >
+                          {service.active} · {service.sub}
+                        </span>
+                      </div>
+                      <p>{service.description}</p>
+                    </button>
+                  {/each}
+                {/if}
+              </div>
+            {/if}
+          </div>
+
+          <section class="service-workbench" data-testid="service-details-panel">
+            {#if activeService}
+              <div class="service-context">
+                <div>
+                  <p class="eyebrow">Selected service</p>
+                  <h2>{activeService.name}</h2>
+                  <p>{activeService.description}</p>
+                </div>
+                <dl class="service-facts">
+                  <div>
+                    <dt>Load</dt>
+                    <dd>{serviceDetails?.load_state ?? activeService.load}</dd>
+                  </div>
+                  <div>
+                    <dt>Active</dt>
+                    <dd>{serviceDetails?.active_state ?? activeService.active}</dd>
+                  </div>
+                  <div>
+                    <dt>Sub</dt>
+                    <dd>{serviceDetails?.sub_state ?? activeService.sub}</dd>
+                  </div>
+                  <div>
+                    <dt>Unit file</dt>
+                    <dd>{serviceDetails?.unit_file_state ?? 'unknown'}</dd>
+                  </div>
+                </dl>
+                <div class="context-actions">
+                  <button
+                    type="button"
+                    disabled={serviceActionLoading === 'start'}
+                    on:click={() => runServiceAction('start')}
+                  >
+                    Start
+                  </button>
+                  <button
+                    type="button"
+                    disabled={serviceActionLoading === 'stop'}
+                    on:click={() => runServiceAction('stop')}
+                  >
+                    Stop
+                  </button>
+                  <button
+                    type="button"
+                    disabled={serviceActionLoading === 'restart'}
+                    on:click={() => runServiceAction('restart')}
+                  >
+                    Restart
+                  </button>
+                </div>
+              </div>
+
+              {#if serviceActionError}
+                <div class="notice error">{serviceActionError}</div>
+              {/if}
+
+              {#if serviceError}
+                <div class="notice error">{serviceError}</div>
+              {/if}
+
+              {#if serviceDetailsLoading}
+                <div class="panel-placeholder">Loading service details...</div>
+              {/if}
+
+              <div class="service-details-grid">
+                <article>
+                  <span>Fragment</span>
+                  <strong>{serviceDetails?.fragment_path ?? 'n/a'}</strong>
+                </article>
+                <article>
+                  <span>Main PID</span>
+                  <strong>{serviceDetails?.main_pid ?? 0}</strong>
+                </article>
+                <article>
+                  <span>Memory</span>
+                  <strong>
+                    {serviceDetails?.memory_current === null ||
+                    serviceDetails?.memory_current === undefined
+                      ? 'n/a'
+                      : `${serviceDetails.memory_current} bytes`}
+                  </strong>
+                </article>
+                <article>
+                  <span>CPU</span>
+                  <strong>
+                    {serviceDetails?.cpu_usage_nsec === null ||
+                    serviceDetails?.cpu_usage_nsec === undefined
+                      ? 'n/a'
+                      : `${serviceDetails.cpu_usage_nsec} ns`}
+                  </strong>
+                </article>
+              </div>
+
+              <section class="service-logs-panel">
+                <div class="panel-head compact-head">
+                  <div>
+                    <h3>Recent logs</h3>
+                    <p>Last 200 journal lines for this unit</p>
+                  </div>
+                  {#if serviceLogsLoading}
+                    <span class="mini-status">Loading...</span>
+                  {/if}
+                </div>
+                <pre data-testid="service-logs" class="service-logs">
+{#if serviceLogs.length === 0}
+No recent log lines.
+{:else}
+{serviceLogs.join('\n')}
+{/if}</pre>
+              </section>
+            {:else}
+              <div class="empty-page">
+                <p class="eyebrow">Services</p>
+                <h2>Select a service to inspect it.</h2>
+                <p>
+                  The first real Services page focuses on browsing units, reading
+                  recent journal output, and starting or stopping the selected
+                  service.
+                </p>
+              </div>
+            {/if}
+          </section>
         </section>
       {:else}
         <section class="simple-page">
