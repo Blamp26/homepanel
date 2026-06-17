@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import NewTerminalDialog from './components/terminal/NewTerminalDialog.svelte';
+  import ServiceActionDialog from './components/services/ServiceActionDialog.svelte';
   import TerminalTabs from './components/terminal/TerminalTabs.svelte';
   import TerminalView from './components/terminal/TerminalView.svelte';
   import {
@@ -72,6 +73,12 @@
   let serviceLogsLoading = false;
   let serviceActionLoading: 'start' | 'stop' | 'restart' | null = null;
   let serviceActionError = '';
+  let serviceActionDialog:
+    | {
+        action: 'stop' | 'restart';
+        serviceName: string;
+      }
+    | null = null;
   let serviceError = '';
   let selectedServiceName: string | null = null;
   let serviceSearch = '';
@@ -272,25 +279,128 @@
     await loadSelectedService(name);
   }
 
-  async function runServiceAction(action: 'start' | 'stop' | 'restart') {
-    if (!selectedServiceName) return;
+  function getServiceActionWarning(
+    serviceName: string,
+    action: 'stop' | 'restart',
+  ) {
+    const lowerName = serviceName.toLowerCase();
+    if (lowerName === 'homepanel.service') {
+      return 'Stopping or restarting homepanel.service may disconnect the panel and end your current session.';
+    }
+    if (lowerName === 'ssh.service' || lowerName === 'sshd.service') {
+      return action === 'stop'
+        ? 'Stopping this service may break remote access to this host.'
+        : 'Restarting this service may briefly interrupt remote access.';
+    }
+    if (
+      lowerName === 'networking.service' ||
+      lowerName === 'networkmanager.service'
+    ) {
+      return 'Stopping or restarting this service may interrupt network connectivity.';
+    }
+    if (lowerName === 'dbus.service') {
+      return 'This system bus is used by many services. Stopping or restarting it can cause wider failures.';
+    }
+    if (lowerName === 'polkit.service') {
+      return 'This service controls privilege prompts. Stopping or restarting it can break admin actions.';
+    }
+    if (lowerName === 'ufw.service') {
+      return 'This firewall service controls access rules. Stopping or restarting it may change host exposure.';
+    }
+    if (lowerName.startsWith('systemd-') && lowerName.endsWith('.service')) {
+      return 'This is a core system service. Stopping or restarting it can affect host stability.';
+    }
+    if (
+      lowerName === 'homepaneld.service' ||
+      lowerName.includes('homepanel') ||
+      lowerName.includes('ssh') ||
+      lowerName.includes('network')
+    ) {
+      return 'This service is important to the host. Stopping or restarting it can have visible side effects.';
+    }
+    return 'Stopping or restarting this service can interrupt the host if it depends on it.';
+  }
 
+  function buildServiceActionError(
+    action: 'start' | 'stop' | 'restart',
+    name: string,
+    err: unknown,
+  ) {
+    const reason = extractErrorMessage(err);
+    return `systemctl ${action} ${name} failed: ${reason}`;
+  }
+
+  function extractErrorMessage(err: unknown) {
+    const raw = err instanceof Error ? err.message : String(err);
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (typeof parsed === 'string') {
+        return parsed;
+      }
+      if (parsed && typeof parsed === 'object') {
+        const payload = parsed as Record<string, unknown>;
+        const message = payload.message ?? payload.error;
+        if (typeof message === 'string') {
+          return message;
+        }
+      }
+    } catch {
+      return raw.replace(/^"|"$/g, '').trim();
+    }
+    return raw.replace(/^"|"$/g, '').trim();
+  }
+
+  function openServiceActionDialog(action: 'stop' | 'restart') {
+    if (!selectedServiceName) return;
+    serviceActionError = '';
+    serviceActionDialog = {
+      action,
+      serviceName: selectedServiceName,
+    };
+  }
+
+  function closeServiceActionDialog() {
+    if (serviceActionLoading) return;
+    serviceActionDialog = null;
+    serviceActionError = '';
+  }
+
+  async function executeServiceAction(
+    action: 'start' | 'stop' | 'restart',
+    serviceName: string,
+  ) {
     serviceActionLoading = action;
     serviceActionError = '';
     try {
       if (action === 'start') {
-        await startService(selectedServiceName);
+        await startService(serviceName);
       } else if (action === 'stop') {
-        await stopService(selectedServiceName);
+        await stopService(serviceName);
       } else {
-        await restartService(selectedServiceName);
+        await restartService(serviceName);
       }
       await loadServices();
+      if (serviceActionDialog?.serviceName === serviceName) {
+        serviceActionDialog = null;
+      }
     } catch (err) {
-      serviceActionError = err instanceof Error ? err.message : String(err);
+      serviceActionError = buildServiceActionError(action, serviceName, err);
     } finally {
       serviceActionLoading = null;
     }
+  }
+
+  async function confirmServiceAction() {
+    if (!serviceActionDialog || serviceActionLoading) return;
+    await executeServiceAction(
+      serviceActionDialog.action,
+      serviceActionDialog.serviceName,
+    );
+  }
+
+  async function runServiceAction(action: 'start') {
+    if (!selectedServiceName) return;
+    await executeServiceAction(action, selectedServiceName);
   }
 
   async function syncAuthState() {
@@ -393,6 +503,8 @@
     serviceLogs = [];
     servicesError = '';
     serviceError = '';
+    serviceActionError = '';
+    serviceActionDialog = null;
     serviceSearch = '';
     serviceFilter = 'all';
     serviceDetailsByName = {};
@@ -893,29 +1005,33 @@
                 <div class="context-actions">
                   <button
                     type="button"
-                    disabled={serviceActionLoading === 'start'}
+                    disabled={serviceActionLoading !== null || serviceActionDialog !== null}
                     on:click={() => runServiceAction('start')}
                   >
-                    Start
+                    {#if serviceActionLoading === 'start'}
+                      Starting...
+                    {:else}
+                      Start
+                    {/if}
                   </button>
                   <button
                     type="button"
-                    disabled={serviceActionLoading === 'stop'}
-                    on:click={() => runServiceAction('stop')}
+                    disabled={serviceActionLoading !== null || serviceActionDialog !== null}
+                    on:click={() => openServiceActionDialog('stop')}
                   >
                     Stop
                   </button>
                   <button
                     type="button"
-                    disabled={serviceActionLoading === 'restart'}
-                    on:click={() => runServiceAction('restart')}
+                    disabled={serviceActionLoading !== null || serviceActionDialog !== null}
+                    on:click={() => openServiceActionDialog('restart')}
                   >
                     Restart
                   </button>
                 </div>
               </div>
 
-              {#if serviceActionError}
+              {#if serviceActionError && serviceActionDialog === null}
                 <div class="notice error">{serviceActionError}</div>
               {/if}
 
@@ -979,7 +1095,7 @@ No recent log lines.
                 <h2>Select a service to inspect it.</h2>
                 <p>
                   The first real Services page focuses on browsing units, reading
-                  recent journal output, and starting or stopping the selected
+                  recent journal output, and starting or managing the selected
                   service.
                 </p>
               </div>
@@ -1004,6 +1120,24 @@ No recent log lines.
       open={showNewTerminal}
       onCreate={createTerminalFromDialog}
       onClose={() => (showNewTerminal = false)}
+    />
+
+    <ServiceActionDialog
+      open={serviceActionDialog !== null}
+      serviceName={serviceActionDialog?.serviceName ?? ''}
+      action={serviceActionDialog?.action ?? 'stop'}
+      warning={
+        serviceActionDialog
+          ? getServiceActionWarning(
+              serviceActionDialog.serviceName,
+              serviceActionDialog.action,
+            )
+          : ''
+      }
+      error={serviceActionError}
+      loading={serviceActionLoading !== null}
+      onConfirm={confirmServiceAction}
+      onClose={closeServiceActionDialog}
     />
   </div>
 {/if}

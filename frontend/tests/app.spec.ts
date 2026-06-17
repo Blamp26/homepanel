@@ -520,20 +520,20 @@ test('services page opens and manages systemd units', async ({
   const shell = await mockAuthenticatedShell(page, [], {
     services: [
       {
-        name: 'homepaneld.service',
+        name: 'homepanel.service',
         load: 'loaded',
         active: 'active',
         sub: 'running',
         description: 'HomePanel daemon',
         unit_file_state: 'enabled',
         details: {
-          name: 'homepaneld.service',
+          name: 'homepanel.service',
           load_state: 'loaded',
           active_state: 'active',
           sub_state: 'running',
           unit_file_state: 'enabled',
           description: 'HomePanel daemon',
-          fragment_path: '/usr/lib/systemd/system/homepaneld.service',
+          fragment_path: '/usr/lib/systemd/system/homepanel.service',
           main_pid: 1234,
           memory_current: 1048576,
           cpu_usage_nsec: 2048,
@@ -677,7 +677,7 @@ test('services page opens and manages systemd units', async ({
   );
   await expect(page.getByTestId('service-group-important')).toContainText('Important');
   await expect(page.getByTestId('service-group-other')).toContainText('Other services');
-  await expect(page.getByTestId('service-status-homepaneld-service')).toHaveText('RUN');
+  await expect(page.getByTestId('service-status-homepanel-service')).toHaveText('RUN');
   await expect(page.getByTestId('service-status-ssh-service')).toHaveText('RUN');
   await expect(page.getByTestId('service-status-beammp-service')).toHaveText('FAIL');
   await expect(page.getByTestId('service-status-nginx-service')).toHaveText('RUN');
@@ -690,7 +690,7 @@ test('services page opens and manages systemd units', async ({
   await page.getByTestId('service-search').fill('');
   await page.getByRole('button', { name: 'Running', exact: true }).click();
   await expect(page.getByTestId('service-count')).toContainText('3 of 6 services');
-  await expect(page.getByTestId('service-row-homepaneld-service')).toBeVisible();
+  await expect(page.getByTestId('service-row-homepanel-service')).toBeVisible();
   await expect(page.getByTestId('service-row-ssh-service')).toBeVisible();
   await expect(page.getByTestId('service-row-nginx-service')).toBeVisible();
   await expect(page.getByTestId('service-status-nginx-service')).toHaveText('RUN');
@@ -700,11 +700,11 @@ test('services page opens and manages systemd units', async ({
   await expect(page.getByTestId('service-count')).toContainText('1 of 6 services');
   await expect(page.getByTestId('service-row-beammp-service')).toBeVisible();
   await expect(page.getByTestId('service-status-beammp-service')).toHaveText('FAIL');
-  await expect(page.getByTestId('service-row-homepaneld-service')).toHaveCount(0);
+  await expect(page.getByTestId('service-row-homepanel-service')).toHaveCount(0);
 
   await page.getByRole('button', { name: 'Enabled', exact: true }).click();
   await expect(page.getByTestId('service-count')).toContainText('4 of 6 services');
-  await expect(page.getByTestId('service-row-homepaneld-service')).toBeVisible();
+  await expect(page.getByTestId('service-row-homepanel-service')).toBeVisible();
   await expect(page.getByTestId('service-row-ssh-service')).toBeVisible();
   await expect(page.getByTestId('service-row-minecraft-service')).toBeVisible();
   await expect(page.getByTestId('service-row-beammp-service')).toBeVisible();
@@ -712,22 +712,34 @@ test('services page opens and manages systemd units', async ({
 
   await page.getByRole('button', { name: 'Important', exact: true }).click();
   await expect(page.getByTestId('service-count')).toContainText('5 of 6 services');
-  await expect(page.getByTestId('service-row-homepaneld-service')).toBeVisible();
+  await expect(page.getByTestId('service-row-homepanel-service')).toBeVisible();
   await expect(page.getByTestId('service-row-ssh-service')).toBeVisible();
   await expect(page.getByTestId('service-row-minecraft-service')).toBeVisible();
   await expect(page.getByTestId('service-row-squad-service')).toBeVisible();
   await expect(page.getByTestId('service-row-beammp-service')).toBeVisible();
   await expect(page.getByTestId('service-row-nginx-service')).toHaveCount(0);
 
-  await page.getByTestId('service-row-ssh-service').click();
+  await page.getByTestId('service-row-homepanel-service').click();
   await expect(page.getByTestId('service-details-panel')).toContainText(
-    'ssh.service',
+    'homepanel.service',
   );
-  await expect(page.getByTestId('service-logs')).toContainText('listening');
+  await expect(page.getByTestId('service-logs')).toContainText('booted');
 
   await page.getByRole('button', { name: 'Restart' }).click();
+  await expect(page.getByTestId('service-action-warning')).toContainText(
+    'disconnect the panel',
+  );
+  await expect(page.getByTestId('service-action-summary')).toContainText(
+    'homepanel.service',
+  );
+  await expect(page.getByRole('dialog')).toBeVisible();
+  await page.getByRole('button', { name: 'Cancel' }).click();
+  await expect.poll(() => shell.getServiceActions()).toEqual([]);
+
+  await page.getByRole('button', { name: 'Restart' }).click();
+  await page.getByRole('button', { name: 'Confirm' }).click();
   await expect.poll(() => shell.getServiceActions()).toContain(
-    'POST /api/services/ssh.service/restart',
+    'POST /api/services/homepanel.service/restart',
   );
 });
 
