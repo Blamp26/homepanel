@@ -10,7 +10,7 @@
     listTerminals,
     type TerminalSummary,
   } from './api/terminals';
-  import { login, logout, me, setup } from './api/auth';
+  import { login, logout, setup, status as authStatus } from './api/auth';
 
   type Page =
     | 'dashboard'
@@ -34,8 +34,8 @@
 
   let user: string | null = null;
   let loading = true;
-  let authMode: 'login' | 'setup' = 'setup';
-  let username = 'admin';
+  let authMode: 'login' | 'setup' = 'login';
+  let username = '';
   let password = '';
   let page: Page = 'terminals';
   let terminals: TerminalSummary[] = [];
@@ -92,21 +92,25 @@
     );
   }
 
-  async function refreshUser() {
+  async function syncAuthState() {
     try {
-      const response = await me();
-      user = response.username;
+      const response = await authStatus();
+      authMode = response.setup_required ? 'setup' : 'login';
+      user = response.authenticated ? response.username : null;
+      if (user) {
+        await refresh();
+      }
     } catch {
+      authMode = 'login';
       user = null;
-    } finally {
-      loading = false;
     }
   }
 
   onMount(async () => {
-    await refreshUser();
-    if (user) {
-      await refresh();
+    try {
+      await syncAuthState();
+    } finally {
+      loading = false;
     }
   });
 
@@ -118,8 +122,9 @@
       } else {
         await login(username, password);
       }
-      await refreshUser();
-      await refresh();
+      username = '';
+      password = '';
+      await syncAuthState();
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
     }
@@ -176,9 +181,12 @@
 
   async function signOut() {
     await logout();
+    username = '';
+    password = '';
     user = null;
     terminals = [];
     activeTerminalId = null;
+    await syncAuthState();
   }
 
   function shortId(id: string) {
@@ -208,7 +216,7 @@
 
 {#if loading}
   <main class="auth-screen">
-    <div class="auth-card loading-card">Loading HomePanel...</div>
+    <div class="auth-card loading-card">Checking your session...</div>
   </main>
 {:else if !user}
   <main class="auth-screen">
@@ -219,27 +227,25 @@
           <h1>HomePanel</h1>
           <p>
             {authMode === 'setup'
-              ? 'Create the first administrator account.'
+              ? 'Initial setup'
               : 'Sign in to manage this host.'}
           </p>
         </div>
       </div>
 
-      <div class="segmented" aria-label="Authentication mode">
-        <button
-          type="button"
-          class:active={authMode === 'setup'}
-          on:click={() => (authMode = 'setup')}>Setup</button
-        >
-        <button
-          type="button"
-          class:active={authMode === 'login'}
-          on:click={() => (authMode = 'login')}>Login</button
-        >
-      </div>
+      <p class="auth-copy">
+        {authMode === 'setup'
+          ? 'Create the first user for this host.'
+          : 'Use your existing account to continue.'}
+      </p>
 
       <label for="login-user">Username</label>
-      <input id="login-user" bind:value={username} autocomplete="username" />
+      <input
+        id="login-user"
+        bind:value={username}
+        autocomplete="username"
+        placeholder={authMode === 'setup' ? 'Choose a username' : 'Username'}
+      />
 
       <label for="login-pass">Password</label>
       <input
@@ -254,7 +260,7 @@
       {/if}
 
       <button class="primary-button" type="submit"
-        >{authMode === 'setup' ? 'Create admin' : 'Login'}</button
+        >{authMode === 'setup' ? 'Create first user' : 'Sign in'}</button
       >
     </form>
   </main>

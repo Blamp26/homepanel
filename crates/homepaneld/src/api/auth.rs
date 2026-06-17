@@ -37,15 +37,73 @@ pub struct MeResponse {
     pub username: String,
 }
 
-pub async fn setup(State(state): State<AppState>, Json(body): Json<SetupRequest>) -> impl IntoResponse {
-    let user_count: (i64,) = match sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM users")
+#[derive(Debug, Serialize)]
+pub struct AuthStatusResponse {
+    pub setup_required: bool,
+    pub authenticated: bool,
+    pub username: Option<String>,
+}
+
+async fn setup_required(state: &AppState) -> Result<bool, axum::response::Response> {
+    let user_count = sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM users")
         .fetch_one(&state.db)
-        .await
-    {
-        Ok(result) => result,
-        Err(err) => return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, Json(ApiErrorResponse::from(ApiError::Database(err.to_string())))).into_response(),
+        .await;
+    match user_count {
+        Ok((count,)) => Ok(count == 0),
+        Err(err) => Err((
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiErrorResponse::from(ApiError::Database(err.to_string()))),
+        )
+            .into_response()),
+    }
+}
+
+async fn current_username(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<Option<String>, axum::response::Response> {
+    let Some(token) = extract_token(
+        headers.get(header::COOKIE).and_then(|value| value.to_str().ok()),
+        &state.config.auth.cookie_name,
+    ) else {
+        return Ok(None);
     };
-    if user_count.0 > 0 {
+
+    match crate::auth::sessions::authenticate(state, &token).await {
+        Ok(username) => Ok(username),
+        Err(err) => Err((
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiErrorResponse::from(ApiError::Database(err.to_string()))),
+        )
+            .into_response()),
+    }
+}
+
+pub async fn status(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    let setup_required = match setup_required(&state).await {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+
+    let username = match current_username(&state, &headers).await {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+
+    Json(AuthStatusResponse {
+        setup_required,
+        authenticated: username.is_some(),
+        username,
+    })
+    .into_response()
+}
+
+pub async fn setup(State(state): State<AppState>, Json(body): Json<SetupRequest>) -> impl IntoResponse {
+    let setup_required = match setup_required(&state).await {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    if !setup_required {
         return (axum::http::StatusCode::FORBIDDEN, Json(ApiErrorResponse::from(ApiError::Forbidden))).into_response();
     }
 

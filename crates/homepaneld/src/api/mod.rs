@@ -15,6 +15,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/auth/setup", post(auth::setup))
         .route("/api/auth/login", post(auth::login))
         .route("/api/auth/logout", post(auth::logout))
+        .route("/api/auth/status", get(auth::status))
         .route("/api/auth/me", get(auth::me))
         .route("/api/terminals", get(terminals::list).post(terminals::create))
         .route(

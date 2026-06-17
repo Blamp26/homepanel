@@ -1,6 +1,15 @@
 import { apiGet, apiPost } from './client';
 
 export type MeResponse = { username: string };
+export type AuthStatusResponse = {
+  setup_required: boolean;
+  authenticated: boolean;
+  username: string | null;
+};
+
+export async function status() {
+  return apiGet<AuthStatusResponse>('/api/auth/status');
+}
 
 export async function me() {
   return apiGet<MeResponse>('/api/auth/me');

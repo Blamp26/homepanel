@@ -14,6 +14,12 @@ type TerminalFixture = {
   last_attached_at: string | null;
 };
 
+type AuthFixture = {
+  setupRequired: boolean;
+  authenticated: boolean;
+  username: string | null;
+};
+
 async function requireBackend(request: APIRequestContext) {
   let response;
   try {
@@ -195,17 +201,45 @@ async function mockAuthenticatedShell(
       failRead?: boolean;
       failWrite?: boolean;
     };
+    auth?: AuthFixture;
   },
 ) {
   await installMockWebSocket(page, { scrollback: options?.scrollback });
   await installMockClipboard(page, options?.clipboard);
 
+  const authState: AuthFixture =
+    options?.auth ?? {
+      setupRequired: false,
+      authenticated: true,
+      username: 'alice',
+    };
+
   let state = terminals.slice();
 
-  await page.route('/api/auth/me', async (route) => {
+  await page.route('/api/auth/status', async (route) => {
     await route.fulfill({
       contentType: 'application/json',
-      body: JSON.stringify({ username: 'admin' }),
+      body: JSON.stringify({
+        setup_required: authState.setupRequired,
+        authenticated: authState.authenticated,
+        username: authState.authenticated ? authState.username : null,
+      }),
+    });
+  });
+
+  await page.route('/api/auth/me', async (route) => {
+    if (authState.authenticated && authState.username) {
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ username: authState.username }),
+      });
+      return;
+    }
+
+    await route.fulfill({
+      status: 401,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: 'unauthorized' }),
     });
   });
 
@@ -237,7 +271,9 @@ async function mockAuthenticatedShell(
   });
 
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: 'Terminals' })).toBeVisible();
+  if (authState.authenticated) {
+    await expect(page.getByRole('heading', { name: 'Terminals' })).toBeVisible();
+  }
 }
 
 async function dispatchPasteText(
@@ -327,6 +363,61 @@ test('opens the HomePanel app', async ({ page, request }) => {
   await expect(page.getByRole('heading', { name: 'HomePanel' })).toBeVisible();
 });
 
+test('fresh install shows initial setup', async ({ page, request }) => {
+  await requireBackend(request);
+  await mockAuthenticatedShell(page, [], {
+    auth: {
+      setupRequired: true,
+      authenticated: false,
+      username: null,
+    },
+  });
+
+  await expect(page.getByText('Initial setup')).toBeVisible();
+  await expect(
+    page.getByText('Create the first user for this host.'),
+  ).toBeVisible();
+  await expect(page.getByLabel('Username')).toHaveValue('');
+  await expect(
+    page.getByRole('button', { name: 'Create first user' }),
+  ).toBeVisible();
+});
+
+test('existing user without a session shows login', async ({
+  page,
+  request,
+}) => {
+  await requireBackend(request);
+  await mockAuthenticatedShell(page, [], {
+    auth: {
+      setupRequired: false,
+      authenticated: false,
+      username: null,
+    },
+  });
+
+  await expect(page.getByText('Sign in to manage this host.')).toBeVisible();
+  await expect(
+    page.getByText('Use your existing account to continue.'),
+  ).toBeVisible();
+  await expect(page.getByLabel('Username')).toHaveValue('');
+  await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible();
+});
+
+test('invalid session shows login, not setup', async ({ page, request }) => {
+  await requireBackend(request);
+  await mockAuthenticatedShell(page, [], {
+    auth: {
+      setupRequired: false,
+      authenticated: false,
+      username: null,
+    },
+  });
+
+  await expect(page.getByText('Sign in to manage this host.')).toBeVisible();
+  await expect(page.getByText('Initial setup')).toHaveCount(0);
+});
+
 test('authenticated app shell visual smoke @visual', async ({
   page,
   request,
@@ -371,6 +462,18 @@ test('authenticated app shell visual smoke @visual', async ({
     .include('.app-shell')
     .analyze();
   expect(accessibility.violations).toEqual([]);
+});
+
+test('authenticated session survives refresh', async ({ page, request }) => {
+  await requireBackend(request);
+  await mockAuthenticatedShell(page, [
+    makeTerminal({ id: 'persist-terminal-0001', name: 'Persist Shell' }),
+  ]);
+
+  await expect(page.getByRole('heading', { name: 'Persist Shell' })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'Persist Shell' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Logout' })).toBeVisible();
 });
 
 test('clipboard shortcuts copy selection and paste clipboard text', async ({

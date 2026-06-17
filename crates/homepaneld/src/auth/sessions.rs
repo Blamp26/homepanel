@@ -29,8 +29,24 @@ pub fn extract_token(cookie_header: Option<&str>, cookie_name: &str) -> Option<S
 
 pub async fn authenticate(state: &AppState, token: &str) -> Result<Option<String>> {
     let hash = token_hash(token);
-    let sessions = state.sessions.read().expect("session lock");
-    Ok(sessions.values().find(|session| session.token_hash == hash).map(|s| s.username.clone()))
+    let now = Utc::now();
+    let row = sqlx::query_as::<_, (String,)>(
+        r#"
+        SELECT users.username
+        FROM sessions
+        JOIN users ON users.id = sessions.user_id
+        WHERE sessions.token_hash = ?
+          AND sessions.expires_at > ?
+        LIMIT 1
+        "#,
+    )
+    .bind(&hash)
+    .bind(now)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|err| homepanel_core::error::ApiError::Database(err.to_string()))?;
+
+    Ok(row.map(|(username,)| username))
 }
 
 pub fn new_session_id() -> SessionId {
