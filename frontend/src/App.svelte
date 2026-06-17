@@ -106,19 +106,6 @@
     terminalError = message;
   }
 
-  function serviceTone(value: string | undefined) {
-    const normalized = value?.toLowerCase() ?? '';
-    if (normalized.includes('active') || normalized.includes('running'))
-      return 'good';
-    if (
-      normalized.includes('failed') ||
-      normalized.includes('inactive') ||
-      normalized.includes('dead')
-    )
-      return 'bad';
-    return 'neutral';
-  }
-
   function isServiceRunning(service: ServiceSummary) {
     const active = service.active.toLowerCase();
     const sub = service.sub.toLowerCase();
@@ -151,6 +138,26 @@
     if (isServiceFailed(service)) return 1;
     if (isServiceRunning(service)) return 2;
     return 3;
+  }
+
+  function serviceListStatusLabel(service: ServiceSummary) {
+    const active = service.active.toLowerCase();
+    const sub = service.sub.toLowerCase();
+    if (sub === 'running') return 'RUNNING';
+    if (active === 'failed' || sub === 'failed') return 'FAILED';
+    if (sub === 'exited') return 'EXITED';
+    if (active === 'inactive' || sub === 'dead') return 'INACTIVE';
+    return (sub || active || 'unknown').toUpperCase();
+  }
+
+  function serviceListStatusTone(service: ServiceSummary) {
+    const active = service.active.toLowerCase();
+    const sub = service.sub.toLowerCase();
+    if (sub === 'running') return 'good';
+    if (active === 'failed' || sub === 'failed') return 'bad';
+    if (sub === 'exited' || active === 'inactive' || sub === 'dead')
+      return 'muted';
+    return 'neutral';
   }
 
   function compareServices(a: ServiceSummary, b: ServiceSummary) {
@@ -437,6 +444,9 @@
           return true;
       }
     });
+  $: importantServices = visibleServices.filter(isImportantService);
+  $: otherServices = visibleServices.filter((service) => !isImportantService(service));
+  $: showPinnedGroups = serviceFilter === 'all' && !serviceSearch.trim();
   $: selectedServiceDetails =
     selectedServiceName && serviceDetailsByName[selectedServiceName]
       ? serviceDetailsByName[selectedServiceName]
@@ -739,32 +749,111 @@
             {:else}
               <div class="service-list" data-testid="service-list">
                 {#if visibleServices.length === 0}
-                  <div class="panel-placeholder">No service units found.</div>
-                {:else}
-                  {#each visibleServices as service (service.name)}
-                    <button
-                      type="button"
-                      class:active={selectedServiceName === service.name}
-                      class:failed={isServiceFailed(service)}
-                      class="service-row"
-                      data-testid={`service-row-${serviceTestId(service.name)}`}
-                      on:click={() => selectService(service.name)}
+                  <div class="panel-placeholder service-empty">
+                    No services match the current search or filter.
+                  </div>
+                {:else if showPinnedGroups}
+                  {#if importantServices.length > 0}
+                    <section
+                      class="service-group"
+                      data-testid="service-group-important"
                     >
-                      <div class="service-row-head">
-                        <div class="service-row-title">
-                          <span class="service-row-name">{service.name}</span>
-                          <span class="service-row-description">
-                            {service.description}
-                          </span>
-                        </div>
-                        <span
-                          class={`service-pill ${serviceTone(service.active)}`}
-                        >
-                          {service.active} · {service.sub}
-                        </span>
+                      <div class="service-group-head">
+                        <h3>Important</h3>
+                        <span>{importantServices.length}</span>
                       </div>
-                    </button>
-                  {/each}
+                      <div class="service-group-list">
+                        {#each importantServices as service (service.name)}
+                          <button
+                            type="button"
+                            class:active={selectedServiceName === service.name}
+                            class:failed={isServiceFailed(service)}
+                            class="service-row"
+                            data-testid={`service-row-${serviceTestId(service.name)}`}
+                            on:click={() => selectService(service.name)}
+                          >
+                            <div class="service-row-main">
+                              <span class="service-row-name">{service.name}</span>
+                              <span class="service-row-description">
+                                {service.description}
+                              </span>
+                            </div>
+                            <span
+                              class={`status-pill ${serviceListStatusTone(service)}`}
+                              data-testid={`service-status-${serviceTestId(service.name)}`}
+                            >
+                              {serviceListStatusLabel(service)}
+                            </span>
+                          </button>
+                        {/each}
+                      </div>
+                    </section>
+                  {/if}
+
+                  {#if otherServices.length > 0}
+                    <section
+                      class="service-group"
+                      data-testid="service-group-other"
+                    >
+                      <div class="service-group-head">
+                        <h3>Other services</h3>
+                        <span>{otherServices.length}</span>
+                      </div>
+                      <div class="service-group-list">
+                        {#each otherServices as service (service.name)}
+                          <button
+                            type="button"
+                            class:active={selectedServiceName === service.name}
+                            class:failed={isServiceFailed(service)}
+                            class="service-row"
+                            data-testid={`service-row-${serviceTestId(service.name)}`}
+                            on:click={() => selectService(service.name)}
+                          >
+                            <div class="service-row-main">
+                              <span class="service-row-name">{service.name}</span>
+                              <span class="service-row-description">
+                                {service.description}
+                              </span>
+                            </div>
+                            <span
+                              class={`status-pill ${serviceListStatusTone(service)}`}
+                              data-testid={`service-status-${serviceTestId(service.name)}`}
+                            >
+                              {serviceListStatusLabel(service)}
+                            </span>
+                          </button>
+                        {/each}
+                      </div>
+                    </section>
+                  {/if}
+                {:else}
+                  <section class="service-group" data-testid="service-group-flat">
+                    <div class="service-group-list">
+                      {#each visibleServices as service (service.name)}
+                        <button
+                          type="button"
+                          class:active={selectedServiceName === service.name}
+                          class:failed={isServiceFailed(service)}
+                          class="service-row"
+                          data-testid={`service-row-${serviceTestId(service.name)}`}
+                          on:click={() => selectService(service.name)}
+                        >
+                          <div class="service-row-main">
+                            <span class="service-row-name">{service.name}</span>
+                            <span class="service-row-description">
+                              {service.description}
+                            </span>
+                          </div>
+                          <span
+                            class={`status-pill ${serviceListStatusTone(service)}`}
+                            data-testid={`service-status-${serviceTestId(service.name)}`}
+                          >
+                            {serviceListStatusLabel(service)}
+                          </span>
+                        </button>
+                      {/each}
+                    </div>
+                  </section>
                 {/if}
               </div>
             {/if}

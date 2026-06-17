@@ -655,16 +655,33 @@ test('services page opens and manages systemd units', async ({
       .getByLabel('Systemd services')
       .getByRole('heading', { level: 2, name: 'Services' }),
   ).toBeVisible();
+  await expect(page.getByTestId('service-search')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'All', exact: true })).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: 'Running', exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: 'Failed', exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: 'Enabled', exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: 'Important', exact: true }),
+  ).toBeVisible();
   await expect(page.getByTestId('service-count')).toContainText('6 of 6 services');
-  await expect(page.getByTestId('service-row-homepaneld-service')).toContainText(
-    'HomePanel daemon',
+  const groupHeaders = page.getByTestId('service-list').locator('.service-group');
+  await expect(groupHeaders.first()).toHaveAttribute(
+    'data-testid',
+    'service-group-important',
   );
-  await expect(page.getByTestId('service-row-ssh-service')).toContainText(
-    'OpenSSH server',
+  await expect(page.getByTestId('service-group-important')).toContainText('Important');
+  await expect(page.getByTestId('service-group-other')).toContainText('Other services');
+  await expect(page.getByTestId('service-status-homepaneld-service')).toHaveText(
+    'RUNNING',
   );
-  await expect(page.getByTestId('service-row-beammp-service')).toContainText(
-    'BeamMP server',
-  );
+  await expect(page.getByTestId('service-status-ssh-service')).toHaveText('RUNNING');
+  await expect(page.getByTestId('service-status-beammp-service')).toHaveText('FAILED');
 
   await page.getByTestId('service-search').fill('minecraft');
   await expect(page.getByTestId('service-count')).toContainText('1 of 6 services');
@@ -677,11 +694,13 @@ test('services page opens and manages systemd units', async ({
   await expect(page.getByTestId('service-row-homepaneld-service')).toBeVisible();
   await expect(page.getByTestId('service-row-ssh-service')).toBeVisible();
   await expect(page.getByTestId('service-row-nginx-service')).toBeVisible();
+  await expect(page.getByTestId('service-status-nginx-service')).toHaveText('RUNNING');
   await expect(page.getByTestId('service-row-beammp-service')).toHaveCount(0);
 
   await page.getByRole('button', { name: 'Failed', exact: true }).click();
   await expect(page.getByTestId('service-count')).toContainText('1 of 6 services');
   await expect(page.getByTestId('service-row-beammp-service')).toBeVisible();
+  await expect(page.getByTestId('service-status-beammp-service')).toHaveText('FAILED');
   await expect(page.getByTestId('service-row-homepaneld-service')).toHaveCount(0);
 
   await page.getByRole('button', { name: 'Enabled', exact: true }).click();
