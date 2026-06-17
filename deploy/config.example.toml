@@ -1,0 +1,40 @@
+[server]
+# Bind address for the production daemon.
+bind = "0.0.0.0:8080"
+
+# Public URL used by the frontend and auth/session code.
+# Replace SERVER_IP with the real host/IP or proxy URL.
+public_url = "http://SERVER_IP:8080"
+
+[data]
+# On production hosts, keep app data under /var/lib/homepanel.
+data_dir = "/var/lib/homepanel"
+
+# SQLite database used by the daemon.
+database_url = "sqlite:///var/lib/homepanel/homepanel.db?mode=rwc"
+
+[agent]
+# Socket path for the PTY agent runtime.
+socket_path = "/run/homepanel/agent.sock"
+
+# Keep the default scrollback unless you have a reason to change it.
+terminal_scrollback_bytes = 10485760
+
+[auth]
+cookie_name = "homepanel_session"
+session_days = 30
+
+[files]
+# Adjust these paths to match what this host should expose in the file UI.
+allowed_paths = [
+  "/home",
+  "/srv",
+  "/mnt",
+]
+
+[security]
+# Set to true if you expose terminals to remote users.
+allow_remote_terminal = true
+
+# Set to false only when you know the service is not exposed remotely.
+require_https_for_remote = false

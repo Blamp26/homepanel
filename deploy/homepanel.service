@@ -1,0 +1,15 @@
+[Unit]
+Description=HomePanel Web/API daemon
+After=network.target
+
+[Service]
+User=superadmin
+Group=superadmin
+WorkingDirectory=/home/superadmin/projects/homepanel
+ExecStart=/home/superadmin/projects/homepanel/target/release/homepaneld --config /etc/homepanel/config.toml
+Restart=on-failure
+StateDirectory=homepanel
+RuntimeDirectory=homepanel
+
+[Install]
+WantedBy=multi-user.target
