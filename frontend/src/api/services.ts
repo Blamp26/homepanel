@@ -6,6 +6,7 @@ export type ServiceSummary = {
   active: string;
   sub: string;
   description: string;
+  unit_file_state?: string | null;
 };
 
 export type ServiceDetails = {

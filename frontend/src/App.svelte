@@ -42,6 +42,14 @@
       { value: 'settings', label: 'Settings', state: 'soon' },
     ];
 
+  const serviceFilters = [
+    { value: 'all', label: 'All' },
+    { value: 'running', label: 'Running' },
+    { value: 'failed', label: 'Failed' },
+    { value: 'enabled', label: 'Enabled' },
+    { value: 'important', label: 'Important' },
+  ] as const;
+
   let user: string | null = null;
   let loading = true;
   let authMode: 'login' | 'setup' = 'login';
@@ -66,6 +74,11 @@
   let serviceActionError = '';
   let serviceError = '';
   let selectedServiceName: string | null = null;
+  let serviceSearch = '';
+  let serviceFilter: 'all' | 'running' | 'failed' | 'enabled' | 'important' =
+    'all';
+  let serviceDetailsByName: Record<string, ServiceDetails> = {};
+  let serviceHydrationToken = 0;
 
   async function refresh() {
     terminalError = '';
@@ -106,6 +119,44 @@
     return 'neutral';
   }
 
+  function isServiceRunning(service: ServiceSummary) {
+    const active = service.active.toLowerCase();
+    const sub = service.sub.toLowerCase();
+    return active === 'active' || sub === 'running';
+  }
+
+  function isServiceFailed(service: ServiceSummary) {
+    const active = service.active.toLowerCase();
+    const sub = service.sub.toLowerCase();
+    return active === 'failed' || sub === 'failed';
+  }
+
+  function isImportantService(service: ServiceSummary) {
+    const name = service.name.toLowerCase();
+    return ['homepanel', 'ssh', 'minecraft', 'squad', 'beammp'].some((key) =>
+      name.includes(key),
+    );
+  }
+
+  function getServiceUnitFileState(service: ServiceSummary) {
+    return (
+      service.unit_file_state ??
+      serviceDetailsByName[service.name]?.unit_file_state ??
+      null
+    );
+  }
+
+  function serviceRank(service: ServiceSummary) {
+    if (isImportantService(service)) return 0;
+    if (isServiceFailed(service)) return 1;
+    if (isServiceRunning(service)) return 2;
+    return 3;
+  }
+
+  function compareServices(a: ServiceSummary, b: ServiceSummary) {
+    return serviceRank(a) - serviceRank(b) || a.name.localeCompare(b.name);
+  }
+
   function isSelectableTerminal(status: string | undefined) {
     const value = status?.toLowerCase() ?? '';
     return value !== 'exited' && value !== 'failed';
@@ -141,6 +192,10 @@
       ]);
       serviceDetails = details;
       serviceLogs = logs.items;
+      serviceDetailsByName = {
+        ...serviceDetailsByName,
+        [name]: details,
+      };
     } catch (err) {
       serviceError = err instanceof Error ? err.message : String(err);
       serviceDetails = null;
@@ -157,17 +212,36 @@
     servicesError = '';
     try {
       const response = await listServices();
-      services = response.items;
+      const sorted = response.items.slice().sort(compareServices);
+      services = sorted;
       const preferred = selectedServiceName
-        ? response.items.find((service) => service.name === selectedServiceName)
+        ? sorted.find((service) => service.name === selectedServiceName)
         : null;
-      selectedServiceName = preferred?.name ?? response.items[0]?.name ?? null;
+      selectedServiceName = preferred?.name ?? sorted[0]?.name ?? null;
       if (selectedServiceName) {
         await loadSelectedService(selectedServiceName);
       } else {
         serviceDetails = null;
         serviceLogs = [];
       }
+      const hydrationToken = ++serviceHydrationToken;
+      void (async () => {
+        const hydrated = await Promise.allSettled(
+          sorted.map(async (service) => [
+            service.name,
+            await getService(service.name),
+          ] as const),
+        );
+        if (hydrationToken !== serviceHydrationToken) return;
+        const nextDetails = { ...serviceDetailsByName };
+        for (const result of hydrated) {
+          if (result.status === 'fulfilled') {
+            const [name, details] = result.value;
+            nextDetails[name] = details;
+          }
+        }
+        serviceDetailsByName = nextDetails;
+      })();
     } catch (err) {
       servicesError = err instanceof Error ? err.message : String(err);
       services = [];
@@ -312,6 +386,9 @@
     serviceLogs = [];
     servicesError = '';
     serviceError = '';
+    serviceSearch = '';
+    serviceFilter = 'all';
+    serviceDetailsByName = {};
     await syncAuthState();
   }
 
@@ -338,6 +415,32 @@
   );
   $: activeService =
     services.find((service) => service.name === selectedServiceName) ?? null;
+  $: visibleServices = services
+    .filter((service) => {
+      const query = serviceSearch.trim().toLowerCase();
+      if (!query) return true;
+      return `${service.name} ${service.description}`
+        .toLowerCase()
+        .includes(query);
+    })
+    .filter((service) => {
+      switch (serviceFilter) {
+        case 'running':
+          return isServiceRunning(service);
+        case 'failed':
+          return isServiceFailed(service);
+        case 'enabled':
+          return getServiceUnitFileState(service) === 'enabled';
+        case 'important':
+          return isImportantService(service);
+        default:
+          return true;
+      }
+    });
+  $: selectedServiceDetails =
+    selectedServiceName && serviceDetailsByName[selectedServiceName]
+      ? serviceDetailsByName[selectedServiceName]
+      : serviceDetails;
   $: pageTitle =
     pages.find((item) => item.value === page)?.label ?? 'HomePanel';
 </script>
@@ -600,32 +703,66 @@
               </button>
             </div>
 
+            <div class="service-tools">
+              <label class="service-search-label" for="service-search">
+                <span class="sr-only">Search services</span>
+                <input
+                  id="service-search"
+                  data-testid="service-search"
+                  type="search"
+                  placeholder="Search services..."
+                  bind:value={serviceSearch}
+                />
+              </label>
+
+              <div class="segmented service-filters" role="tablist" aria-label="Service filters">
+                {#each serviceFilters as filter (filter.value)}
+                  <button
+                    type="button"
+                    class:active={serviceFilter === filter.value}
+                    on:click={() => (serviceFilter = filter.value)}
+                  >
+                    {filter.label}
+                  </button>
+                {/each}
+              </div>
+
+              <div class="service-count" data-testid="service-count">
+                {visibleServices.length} of {services.length} services
+              </div>
+            </div>
+
             {#if servicesLoading && services.length === 0}
               <div class="panel-placeholder">Loading services...</div>
             {:else if servicesError}
               <div class="notice error" role="alert">{servicesError}</div>
             {:else}
               <div class="service-list" data-testid="service-list">
-                {#if services.length === 0}
+                {#if visibleServices.length === 0}
                   <div class="panel-placeholder">No service units found.</div>
                 {:else}
-                  {#each services as service (service.name)}
+                  {#each visibleServices as service (service.name)}
                     <button
                       type="button"
                       class:active={selectedServiceName === service.name}
+                      class:failed={isServiceFailed(service)}
                       class="service-row"
                       data-testid={`service-row-${serviceTestId(service.name)}`}
                       on:click={() => selectService(service.name)}
                     >
-                      <div class="service-row-top">
-                        <span class="service-row-name">{service.name}</span>
+                      <div class="service-row-head">
+                        <div class="service-row-title">
+                          <span class="service-row-name">{service.name}</span>
+                          <span class="service-row-description">
+                            {service.description}
+                          </span>
+                        </div>
                         <span
                           class={`service-pill ${serviceTone(service.active)}`}
                         >
                           {service.active} · {service.sub}
                         </span>
                       </div>
-                      <p>{service.description}</p>
                     </button>
                   {/each}
                 {/if}
@@ -644,19 +781,19 @@
                 <dl class="service-facts">
                   <div>
                     <dt>Load</dt>
-                    <dd>{serviceDetails?.load_state ?? activeService.load}</dd>
+                    <dd>{selectedServiceDetails?.load_state ?? activeService.load}</dd>
                   </div>
                   <div>
                     <dt>Active</dt>
-                    <dd>{serviceDetails?.active_state ?? activeService.active}</dd>
+                    <dd>{selectedServiceDetails?.active_state ?? activeService.active}</dd>
                   </div>
                   <div>
                     <dt>Sub</dt>
-                    <dd>{serviceDetails?.sub_state ?? activeService.sub}</dd>
+                    <dd>{selectedServiceDetails?.sub_state ?? activeService.sub}</dd>
                   </div>
                   <div>
                     <dt>Unit file</dt>
-                    <dd>{serviceDetails?.unit_file_state ?? 'unknown'}</dd>
+                    <dd>{selectedServiceDetails?.unit_file_state ?? 'unknown'}</dd>
                   </div>
                 </dl>
                 <div class="context-actions">
@@ -699,28 +836,28 @@
               <div class="service-details-grid">
                 <article>
                   <span>Fragment</span>
-                  <strong>{serviceDetails?.fragment_path ?? 'n/a'}</strong>
+                  <strong>{selectedServiceDetails?.fragment_path ?? 'n/a'}</strong>
                 </article>
                 <article>
                   <span>Main PID</span>
-                  <strong>{serviceDetails?.main_pid ?? 0}</strong>
+                  <strong>{selectedServiceDetails?.main_pid ?? 0}</strong>
                 </article>
                 <article>
                   <span>Memory</span>
                   <strong>
-                    {serviceDetails?.memory_current === null ||
-                    serviceDetails?.memory_current === undefined
+                    {selectedServiceDetails?.memory_current === null ||
+                    selectedServiceDetails?.memory_current === undefined
                       ? 'n/a'
-                      : `${serviceDetails.memory_current} bytes`}
+                      : `${selectedServiceDetails.memory_current} bytes`}
                   </strong>
                 </article>
                 <article>
                   <span>CPU</span>
                   <strong>
-                    {serviceDetails?.cpu_usage_nsec === null ||
-                    serviceDetails?.cpu_usage_nsec === undefined
+                    {selectedServiceDetails?.cpu_usage_nsec === null ||
+                    selectedServiceDetails?.cpu_usage_nsec === undefined
                       ? 'n/a'
-                      : `${serviceDetails.cpu_usage_nsec} ns`}
+                      : `${selectedServiceDetails.cpu_usage_nsec} ns`}
                   </strong>
                 </article>
               </div>

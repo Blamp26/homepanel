@@ -26,6 +26,7 @@ type ServiceFixture = {
   active: string;
   sub: string;
   description: string;
+  unit_file_state?: string | null;
   details: {
     name: string;
     load_state: string;
@@ -306,12 +307,13 @@ async function mockAuthenticatedShell(
         contentType: 'application/json',
         body: JSON.stringify({
           items: serviceState.map(
-            ({ name, load, active, sub, description }) => ({
+            ({ name, load, active, sub, description, unit_file_state }) => ({
               name,
               load,
               active,
               sub,
               description,
+              unit_file_state,
             }),
           ),
         }),
@@ -515,54 +517,136 @@ test('services page opens and manages systemd units', async ({
   request,
 }) => {
   await requireBackend(request);
-  const shell = await mockAuthenticatedShell(
-    page,
-    [],
-    {
-      services: [
-        {
+  const shell = await mockAuthenticatedShell(page, [], {
+    services: [
+      {
+        name: 'homepaneld.service',
+        load: 'loaded',
+        active: 'active',
+        sub: 'running',
+        description: 'HomePanel daemon',
+        unit_file_state: 'enabled',
+        details: {
           name: 'homepaneld.service',
-          load: 'loaded',
-          active: 'active',
-          sub: 'running',
+          load_state: 'loaded',
+          active_state: 'active',
+          sub_state: 'running',
+          unit_file_state: 'enabled',
           description: 'HomePanel daemon',
-          details: {
-            name: 'homepaneld.service',
-            load_state: 'loaded',
-            active_state: 'active',
-            sub_state: 'running',
-            unit_file_state: 'enabled',
-            description: 'HomePanel daemon',
-            fragment_path: '/usr/lib/systemd/system/homepaneld.service',
-            main_pid: 1234,
-            memory_current: 1048576,
-            cpu_usage_nsec: 2048,
-          },
-          logs: ['2026-06-17 10:00:00 booted', '2026-06-17 10:01:00 ready'],
+          fragment_path: '/usr/lib/systemd/system/homepaneld.service',
+          main_pid: 1234,
+          memory_current: 1048576,
+          cpu_usage_nsec: 2048,
         },
-        {
+        logs: ['2026-06-17 10:00:00 booted', '2026-06-17 10:01:00 ready'],
+      },
+      {
+        name: 'ssh.service',
+        load: 'loaded',
+        active: 'active',
+        sub: 'running',
+        description: 'OpenSSH server',
+        unit_file_state: 'enabled',
+        details: {
           name: 'ssh.service',
-          load: 'loaded',
-          active: 'inactive',
-          sub: 'dead',
+          load_state: 'loaded',
+          active_state: 'active',
+          sub_state: 'running',
+          unit_file_state: 'enabled',
           description: 'OpenSSH server',
-          details: {
-            name: 'ssh.service',
-            load_state: 'loaded',
-            active_state: 'inactive',
-            sub_state: 'dead',
-            unit_file_state: 'enabled',
-            description: 'OpenSSH server',
-            fragment_path: '/usr/lib/systemd/system/ssh.service',
-            main_pid: 0,
-            memory_current: null,
-            cpu_usage_nsec: null,
-          },
-          logs: ['2026-06-17 09:59:00 stopping'],
+          fragment_path: '/usr/lib/systemd/system/ssh.service',
+          main_pid: 1400,
+          memory_current: 222222,
+          cpu_usage_nsec: 1024,
         },
-      ],
-    },
-  );
+        logs: ['2026-06-17 09:59:00 listening'],
+      },
+      {
+        name: 'minecraft.service',
+        load: 'loaded',
+        active: 'inactive',
+        sub: 'dead',
+        description: 'Minecraft server',
+        unit_file_state: 'enabled',
+        details: {
+          name: 'minecraft.service',
+          load_state: 'loaded',
+          active_state: 'inactive',
+          sub_state: 'dead',
+          unit_file_state: 'enabled',
+          description: 'Minecraft server',
+          fragment_path: '/usr/lib/systemd/system/minecraft.service',
+          main_pid: 0,
+          memory_current: null,
+          cpu_usage_nsec: null,
+        },
+        logs: ['2026-06-17 09:58:00 stopped'],
+      },
+      {
+        name: 'squad.service',
+        load: 'loaded',
+        active: 'inactive',
+        sub: 'dead',
+        description: 'Squad server',
+        unit_file_state: 'disabled',
+        details: {
+          name: 'squad.service',
+          load_state: 'loaded',
+          active_state: 'inactive',
+          sub_state: 'dead',
+          unit_file_state: 'disabled',
+          description: 'Squad server',
+          fragment_path: '/usr/lib/systemd/system/squad.service',
+          main_pid: 0,
+          memory_current: null,
+          cpu_usage_nsec: null,
+        },
+        logs: ['2026-06-17 09:57:00 stopped'],
+      },
+      {
+        name: 'beammp.service',
+        load: 'loaded',
+        active: 'failed',
+        sub: 'failed',
+        description: 'BeamMP server',
+        unit_file_state: 'enabled',
+        details: {
+          name: 'beammp.service',
+          load_state: 'loaded',
+          active_state: 'failed',
+          sub_state: 'failed',
+          unit_file_state: 'enabled',
+          description: 'BeamMP server',
+          fragment_path: '/usr/lib/systemd/system/beammp.service',
+          main_pid: 0,
+          memory_current: null,
+          cpu_usage_nsec: null,
+        },
+        logs: ['2026-06-17 09:56:00 crashed'],
+      },
+      {
+        name: 'nginx.service',
+        load: 'loaded',
+        active: 'active',
+        sub: 'running',
+        description: 'The NGINX HTTP and reverse proxy server',
+        unit_file_state: 'disabled',
+        details: {
+          name: 'nginx.service',
+          load_state: 'loaded',
+          active_state: 'active',
+          sub_state: 'running',
+          unit_file_state: 'disabled',
+          description: 'The NGINX HTTP and reverse proxy server',
+          fragment_path: '/usr/lib/systemd/system/nginx.service',
+          main_pid: 1888,
+          memory_current: 3072000,
+          cpu_usage_nsec: 4096,
+        },
+        logs: ['2026-06-17 09:55:00 running'],
+      },
+    ],
+  });
 
   await page.getByRole('button', { name: 'Services' }).click();
 
@@ -571,18 +655,57 @@ test('services page opens and manages systemd units', async ({
       .getByLabel('Systemd services')
       .getByRole('heading', { level: 2, name: 'Services' }),
   ).toBeVisible();
+  await expect(page.getByTestId('service-count')).toContainText('6 of 6 services');
+  await expect(page.getByTestId('service-row-homepaneld-service')).toContainText(
+    'HomePanel daemon',
+  );
+  await expect(page.getByTestId('service-row-ssh-service')).toContainText(
+    'OpenSSH server',
+  );
+  await expect(page.getByTestId('service-row-beammp-service')).toContainText(
+    'BeamMP server',
+  );
+
+  await page.getByTestId('service-search').fill('minecraft');
+  await expect(page.getByTestId('service-count')).toContainText('1 of 6 services');
+  await expect(page.getByTestId('service-row-minecraft-service')).toBeVisible();
+  await expect(page.getByTestId('service-row-ssh-service')).toHaveCount(0);
+
+  await page.getByTestId('service-search').fill('');
+  await page.getByRole('button', { name: 'Running', exact: true }).click();
+  await expect(page.getByTestId('service-count')).toContainText('3 of 6 services');
   await expect(page.getByTestId('service-row-homepaneld-service')).toBeVisible();
   await expect(page.getByTestId('service-row-ssh-service')).toBeVisible();
-  await expect(page.getByTestId('service-details-panel')).toContainText(
-    'homepaneld.service',
-  );
-  await expect(page.getByTestId('service-logs')).toContainText('booted');
+  await expect(page.getByTestId('service-row-nginx-service')).toBeVisible();
+  await expect(page.getByTestId('service-row-beammp-service')).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Failed', exact: true }).click();
+  await expect(page.getByTestId('service-count')).toContainText('1 of 6 services');
+  await expect(page.getByTestId('service-row-beammp-service')).toBeVisible();
+  await expect(page.getByTestId('service-row-homepaneld-service')).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Enabled', exact: true }).click();
+  await expect(page.getByTestId('service-count')).toContainText('4 of 6 services');
+  await expect(page.getByTestId('service-row-homepaneld-service')).toBeVisible();
+  await expect(page.getByTestId('service-row-ssh-service')).toBeVisible();
+  await expect(page.getByTestId('service-row-minecraft-service')).toBeVisible();
+  await expect(page.getByTestId('service-row-beammp-service')).toBeVisible();
+  await expect(page.getByTestId('service-row-nginx-service')).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Important', exact: true }).click();
+  await expect(page.getByTestId('service-count')).toContainText('5 of 6 services');
+  await expect(page.getByTestId('service-row-homepaneld-service')).toBeVisible();
+  await expect(page.getByTestId('service-row-ssh-service')).toBeVisible();
+  await expect(page.getByTestId('service-row-minecraft-service')).toBeVisible();
+  await expect(page.getByTestId('service-row-squad-service')).toBeVisible();
+  await expect(page.getByTestId('service-row-beammp-service')).toBeVisible();
+  await expect(page.getByTestId('service-row-nginx-service')).toHaveCount(0);
 
   await page.getByTestId('service-row-ssh-service').click();
   await expect(page.getByTestId('service-details-panel')).toContainText(
     'ssh.service',
   );
-  await expect(page.getByTestId('service-logs')).toContainText('stopping');
+  await expect(page.getByTestId('service-logs')).toContainText('listening');
 
   await page.getByRole('button', { name: 'Restart' }).click();
   await expect.poll(() => shell.getServiceActions()).toContain(
