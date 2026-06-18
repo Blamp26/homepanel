@@ -4,6 +4,7 @@
   import ServiceActionDialog from './components/services/ServiceActionDialog.svelte';
   import TerminalTabs from './components/terminal/TerminalTabs.svelte';
   import TerminalView from './components/terminal/TerminalView.svelte';
+  import FilesPage from './pages/Files.svelte';
   import {
     clearTerminalScrollback,
     createTerminal,
@@ -36,7 +37,7 @@
     [
       { value: 'terminals', label: 'Terminals', state: 'ready' },
       { value: 'dashboard', label: 'Overview', state: 'ready' },
-      { value: 'files', label: 'Files', state: 'soon' },
+      { value: 'files', label: 'Files', state: 'ready' },
       { value: 'services', label: 'Services', state: 'ready' },
       { value: 'logs', label: 'Logs', state: 'soon' },
       { value: 'game servers', label: 'Game servers', state: 'soon' },
@@ -807,6 +808,8 @@
             </article>
           </div>
         </section>
+      {:else if page === 'files'}
+        <FilesPage />
       {:else if page === 'services'}
         <section class="services-page" aria-label="Systemd services">
           <div class="service-panel">

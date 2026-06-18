@@ -6,7 +6,7 @@ pub mod services;
 pub mod system;
 pub mod terminals;
 
-use axum::{routing::{delete, get, post}, Router};
+use axum::{routing::{get, post}, Router};
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -32,12 +32,10 @@ pub fn router() -> Router<AppState> {
         .route("/api/system/network", get(system::network))
         .route("/api/system/processes", get(system::processes))
         .route("/api/system/metrics/ws", get(system::metrics_ws))
-        .route("/api/files/list", get(files::list))
-        .route("/api/files/read", get(files::read))
-        .route("/api/files/write", post(files::write))
+        .route("/api/files", get(files::list).delete(files::delete))
+        .route("/api/files/preview", get(files::preview))
         .route("/api/files/mkdir", post(files::mkdir))
         .route("/api/files/rename", post(files::rename))
-        .route("/api/files/delete", delete(files::delete))
         .route("/api/files/upload", post(files::upload))
         .route("/api/files/download", get(files::download))
         .route("/api/services", get(services::list))

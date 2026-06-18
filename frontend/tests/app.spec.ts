@@ -1,5 +1,7 @@
 import { expect, type APIRequestContext, test } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
+import { Buffer } from 'node:buffer';
+import path from 'node:path';
 
 type TerminalFixture = {
   id: string;
@@ -40,6 +42,23 @@ type ServiceFixture = {
     cpu_usage_nsec: number | null;
   };
   logs: string[];
+};
+
+type FileFixture = {
+  path: string;
+  kind: 'file' | 'dir' | 'symlink' | 'other';
+  size?: number;
+  modified?: string | null;
+  readonly?: boolean;
+  content?: string;
+  allowedRoots?: string[];
+};
+
+type FilesFixtureOptions = {
+  roots?: string[];
+  visibleRoots?: string[];
+  entries?: FileFixture[];
+  failList?: boolean;
 };
 
 async function requireBackend(request: APIRequestContext) {
@@ -212,6 +231,64 @@ function makeTerminal(
   };
 }
 
+function makeFileFixture(overrides: Partial<FileFixture> & Pick<FileFixture, 'path' | 'kind'>): FileFixture {
+  return {
+    size: 0,
+    modified: '2026-06-17T00:00:00.000Z',
+    readonly: false,
+    content: '',
+    ...overrides,
+  };
+}
+
+function normalizePath(input: string) {
+  return input.replace(/\/+/g, '/');
+}
+
+function dirname(pathname: string) {
+  const parent = path.posix.dirname(normalizePath(pathname));
+  return parent === '.' ? '/' : parent;
+}
+
+function basename(pathname: string) {
+  return path.posix.basename(normalizePath(pathname));
+}
+
+function sortFiles(entries: FileFixture[]) {
+  return entries.slice().sort((a, b) => {
+    const rank = (kind: FileFixture['kind']) => {
+      switch (kind) {
+        case 'dir':
+          return 0;
+        case 'symlink':
+          return 1;
+        case 'file':
+          return 2;
+        default:
+          return 3;
+      }
+    };
+    return rank(a.kind) - rank(b.kind) || basename(a.path).localeCompare(basename(b.path));
+  });
+}
+
+function updateDescendantPaths(state: FileFixture[], source: string, target: string) {
+  const normalizedSource = normalizePath(source);
+  const normalizedTarget = normalizePath(target);
+  return state.map((entry) => {
+    if (entry.path === normalizedSource) {
+      return { ...entry, path: normalizedTarget };
+    }
+    if (entry.path.startsWith(`${normalizedSource}/`)) {
+      return {
+        ...entry,
+        path: normalizedTarget + entry.path.slice(normalizedSource.length),
+      };
+    }
+    return entry;
+  });
+}
+
 async function mockAuthenticatedShell(
   page: Parameters<typeof test>[0]['page'],
   terminals: TerminalFixture[],
@@ -225,6 +302,7 @@ async function mockAuthenticatedShell(
     };
     auth?: AuthFixture;
     services?: ServiceFixture[];
+    files?: FilesFixtureOptions;
   },
 ) {
   await installMockWebSocket(page, { scrollback: options?.scrollback });
@@ -240,6 +318,59 @@ async function mockAuthenticatedShell(
   let state = terminals.slice();
   const serviceState = options?.services ?? [];
   const serviceActions: string[] = [];
+  const fileRoots = options?.files?.roots ?? ['/home', '/srv', '/DATA'];
+  const visibleRoots =
+    options?.files?.visibleRoots ?? fileRoots.filter((root) => root !== '/DATA');
+  let fileState = (options?.files?.entries ?? [
+    makeFileFixture({
+      path: '/mnt',
+      kind: 'dir',
+    }),
+    makeFileFixture({
+      path: '/mnt/games',
+      kind: 'dir',
+    }),
+    makeFileFixture({
+      path: '/mnt/games/launcher.log',
+      kind: 'file',
+      size: 18,
+      content: 'launcher started\n',
+    }),
+    makeFileFixture({
+      path: '/srv',
+      kind: 'dir',
+    }),
+    makeFileFixture({
+      path: '/srv/app',
+      kind: 'dir',
+    }),
+    makeFileFixture({
+      path: '/srv/app/config.txt',
+      kind: 'file',
+      size: 18,
+      content: 'name=homepanel\n',
+    }),
+    makeFileFixture({
+      path: '/srv/app/readme.txt',
+      kind: 'file',
+      size: 26,
+      content: 'Explorer test preview\n',
+    }),
+    makeFileFixture({
+      path: '/srv/logs',
+      kind: 'dir',
+    }),
+    makeFileFixture({
+      path: '/srv/logs/daemon.log',
+      kind: 'file',
+      size: 19,
+      content: 'daemon started\n',
+    }),
+  ]).map((entry) => ({
+    ...entry,
+    path: normalizePath(entry.path),
+  }));
+  const filesFailure = options?.files?.failList ?? false;
 
   await page.route('/api/auth/status', async (route) => {
     await route.fulfill({
@@ -353,6 +484,217 @@ async function mockAuthenticatedShell(
       await route.fulfill({
         contentType: 'application/json',
         body: JSON.stringify({ ok: true }),
+      });
+      return;
+    }
+
+    await route.fallback();
+  });
+
+  await page.route('**/api/files**', async (route) => {
+    const url = new URL(route.request().url());
+    const method = route.request().method();
+    const pathname = url.pathname;
+    const queryPath = normalizePath(url.searchParams.get('path') ?? fileRoots[0]);
+    const isAllowed = (candidate: string) =>
+      fileRoots.some(
+        (root) =>
+          candidate === root ||
+          candidate.startsWith(root.endsWith('/') ? root : `${root}/`),
+      );
+    const childrenOf = (dir: string) =>
+      sortFiles(
+        fileState.filter((entry) => dirname(entry.path) === normalizePath(dir)),
+      );
+    const getEntry = (candidate: string) =>
+      fileState.find((entry) => entry.path === normalizePath(candidate));
+
+    if (filesFailure && method === 'GET' && pathname === '/api/files') {
+      await route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          error: { code: 'bad_request', message: 'files unavailable' },
+        }),
+      });
+      return;
+    }
+
+    if (method === 'GET' && pathname === '/api/files') {
+      const current = normalizePath(url.searchParams.get('path') ?? fileRoots[0]);
+      if (!isAllowed(current)) {
+        await route.fulfill({
+          status: 403,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            error: { code: 'forbidden', message: 'forbidden' },
+          }),
+        });
+        return;
+      }
+
+      const entry = getEntry(current);
+      if (entry && entry.kind !== 'dir') {
+        await route.fulfill({
+          status: 400,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            error: { code: 'bad_request', message: 'path is not a directory' },
+          }),
+        });
+        return;
+      }
+
+      const parent = normalizePath(path.posix.dirname(current));
+      const parentPath =
+        parent !== '.' && parent !== '/' && isAllowed(parent) ? parent : null;
+
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          path: current,
+          parent_path: parentPath,
+          allowed_roots: visibleRoots,
+          entries: childrenOf(current),
+        }),
+      });
+      return;
+    }
+
+    if (method === 'GET' && pathname === '/api/files/preview') {
+      const entry = getEntry(queryPath);
+      if (!entry) {
+        await route.fulfill({
+          status: 404,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            error: { code: 'not_found', message: 'not found' },
+          }),
+        });
+        return;
+      }
+
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          path: entry.path,
+          size: entry.content?.length ?? entry.size ?? 0,
+          truncated: false,
+          content: entry.content ?? '',
+        }),
+      });
+      return;
+    }
+
+    if (method === 'GET' && pathname === '/api/files/download') {
+      const entry = getEntry(queryPath);
+      if (!entry) {
+        await route.fulfill({
+          status: 404,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            error: { code: 'not_found', message: 'not found' },
+          }),
+        });
+        return;
+      }
+
+      await route.fulfill({
+        contentType: 'text/plain',
+        body: entry.content ?? '',
+      });
+      return;
+    }
+
+    if (method === 'POST' && pathname === '/api/files/mkdir') {
+      const body = JSON.parse(route.request().postData() ?? '{}') as {
+        path?: string;
+        name?: string;
+      };
+      const parent = normalizePath(body.path ?? '');
+      const name = body.name ?? '';
+      const target = normalizePath(path.posix.join(parent, name));
+      fileState.push(
+        makeFileFixture({
+          path: target,
+          kind: 'dir',
+        }),
+      );
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ ok: true, path: target }),
+      });
+      return;
+    }
+
+    if (method === 'POST' && pathname === '/api/files/rename') {
+      const body = JSON.parse(route.request().postData() ?? '{}') as {
+        path?: string;
+        new_name?: string;
+      };
+      const source = normalizePath(body.path ?? '');
+      const target = normalizePath(path.posix.join(dirname(source), body.new_name ?? ''));
+      fileState = updateDescendantPaths(fileState, source, target);
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ ok: true, path: target }),
+      });
+      return;
+    }
+
+    if (method === 'DELETE' && pathname === '/api/files') {
+      const body = JSON.parse(route.request().postData() ?? '{}') as {
+        path?: string;
+      };
+      const target = normalizePath(body.path ?? '');
+      const entry = getEntry(target);
+      const descendants = fileState.filter(
+        (item) => item.path.startsWith(`${target}/`) && item.path !== target,
+      );
+      if (entry?.kind === 'dir' && descendants.length > 0) {
+        await route.fulfill({
+          status: 409,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            error: { code: 'bad_request', message: 'directory is not empty' },
+          }),
+        });
+        return;
+      }
+      fileState = fileState.filter(
+        (item) => item.path !== target && !item.path.startsWith(`${target}/`),
+      );
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          ok: true,
+          parent_path: isAllowed(dirname(target)) ? dirname(target) : null,
+        }),
+      });
+      return;
+    }
+
+    if (method === 'POST' && pathname === '/api/files/upload') {
+      const bodyBuffer = route.request().postDataBuffer();
+      const bodyText = bodyBuffer.toString('utf8');
+      const filenameMatch = bodyText.match(/filename="([^"]+)"/);
+      const contentMatch = bodyText.match(/\r\n\r\n([\s\S]*?)\r\n--/);
+      const filename = filenameMatch?.[1] ?? 'upload.txt';
+      const content = contentMatch?.[1] ?? '';
+      const target = normalizePath(
+        path.posix.join(queryPath, filename),
+      );
+      fileState.push(
+        makeFileFixture({
+          path: target,
+          kind: 'file',
+          size: content.length,
+          content,
+        }),
+      );
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ ok: true, path: target }),
       });
       return;
     }
@@ -741,6 +1083,170 @@ test('services page opens and manages systemd units', async ({
   await expect.poll(() => shell.getServiceActions()).toContain(
     'POST /api/services/homepanel.service/restart',
   );
+});
+
+test('files page behaves like an explorer', async ({
+  page,
+  request,
+}) => {
+  await requireBackend(request);
+  await mockAuthenticatedShell(page, [], {
+    files: {
+      roots: ['/home', '/mnt', '/mnt/games', '/srv', '/DATA'],
+      visibleRoots: ['/home', '/mnt', '/mnt/games', '/srv'],
+    },
+  });
+
+  await page.getByRole('button', { name: 'Files' }).click();
+  const homeLocation = page.getByTestId('quick-location-home');
+  const gamesLocation = page.getByTestId('quick-location-games');
+  const serverLocation = page.getByTestId('quick-location-server-data');
+  await expect(homeLocation).toBeVisible();
+  await expect(gamesLocation).toBeVisible();
+  await expect(serverLocation).toBeVisible();
+  await expect(page.getByTestId('root-location-mnt')).toBeVisible();
+  await expect(page.getByTestId('root-location-data')).toHaveCount(0);
+  const homeBox = await homeLocation.boundingBox();
+  expect(homeBox?.height ?? 0).toBeGreaterThan(0);
+  expect(homeBox?.height ?? 0).toBeLessThan(48);
+  await expect(page.getByTestId('files-topbar').getByTestId('files-address')).toBeVisible();
+  await expect(page.getByTestId('files-topbar').getByTestId('files-search')).toBeVisible();
+  await expect(page.getByTestId('files-address')).toHaveValue('/home');
+  await expect(page.getByTestId('files-grid')).toBeVisible();
+  await expect(page.getByTestId('files-table')).toHaveCount(0);
+
+  await serverLocation.click();
+  await expect(page.getByTestId('files-address')).toHaveValue('/srv');
+  await expect(page.getByTestId('file-tile-app')).toBeVisible();
+  await expect(page.getByTestId('file-tile-logs')).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Download' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Rename' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Delete' })).toHaveCount(0);
+
+  await page.getByTestId('files-search').fill('log');
+  await expect(page.getByTestId('file-tile-logs')).toBeVisible();
+  await expect(page.getByTestId('file-tile-app')).toHaveCount(0);
+  await page.getByTestId('files-search').fill('');
+
+  await page.getByTestId('file-tile-app').click();
+  await expect(page.getByTestId('file-tile-app')).toHaveClass(/selected/);
+
+  await page.getByTestId('file-tile-app').dblclick();
+  await expect(page.getByTestId('files-address')).toHaveValue('/srv/app');
+  await expect(page.getByTestId('file-tile-config-txt')).toBeVisible();
+  await expect(page.getByTestId('file-tile-readme-txt')).toBeVisible();
+
+  await page.getByTestId('files-address').fill('/srv/app');
+  await page.getByTestId('files-address').press('Enter');
+  await expect(page.getByTestId('files-address')).toHaveValue('/srv/app');
+  await expect(page.getByTestId('file-tile-config-txt')).toBeVisible();
+  await expect(page.getByTestId('file-tile-readme-txt')).toBeVisible();
+
+  await page.getByRole('button', { name: 'Back' }).click();
+  await expect(page.getByTestId('files-address')).toHaveValue('/srv');
+  await page.getByRole('button', { name: 'Forward' }).click();
+  await expect(page.getByTestId('files-address')).toHaveValue('/srv/app');
+  await page.getByRole('button', { name: 'Up' }).click();
+  await expect(page.getByTestId('files-address')).toHaveValue('/srv');
+
+  await page.getByTestId('files-address').fill('/not-allowed');
+  await page.getByTestId('files-address').press('Enter');
+  await expect(page.getByRole('alert')).toContainText('forbidden');
+  await expect(page.getByTestId('files-address')).toHaveValue('/srv');
+
+  await page.getByTestId('root-location-mnt').click();
+  await expect(page.getByTestId('files-address')).toHaveValue('/mnt');
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(page.getByTestId('file-tile-games')).toBeVisible();
+
+  await page.getByRole('button', { name: 'New folder' }).click();
+  await page.getByLabel('Folder name').fill('sandbox');
+  await page.getByRole('button', { name: 'Create folder' }).click();
+  await expect(page.getByTestId('file-tile-sandbox')).toBeVisible();
+
+  await page.getByTestId('file-tile-sandbox').click({ button: 'right' });
+  const folderMenu = page.getByRole('menu', { name: 'File actions' });
+  await expect(folderMenu).toContainText('Open');
+  await expect(folderMenu).toContainText('Rename');
+  await expect(folderMenu).toContainText('Delete');
+  await expect(folderMenu.getByRole('link', { name: 'Download' })).toHaveCount(0);
+  await folderMenu.getByRole('button', { name: 'Rename' }).click();
+  await page.getByLabel('New name').fill('sandbox-renamed');
+  await page
+    .getByRole('dialog', { name: 'Rename item' })
+    .getByRole('button', { name: 'Rename' })
+    .click();
+  await expect(page.getByTestId('file-tile-sandbox-renamed')).toBeVisible();
+
+  await page.getByTestId('file-tile-sandbox-renamed').click({ button: 'right' });
+  await page
+    .getByRole('menu', { name: 'File actions' })
+    .getByRole('button', { name: 'Delete' })
+    .click();
+  await page
+    .getByRole('dialog', { name: 'Delete item' })
+    .getByRole('button', { name: 'Delete' })
+    .click();
+  await expect(page.getByTestId('files-grid')).not.toContainText('sandbox-renamed');
+
+  await page.getByTestId('file-tile-readme-txt').click({ button: 'right' });
+  const fileMenu = page.getByRole('menu', { name: 'File actions' });
+  await expect(fileMenu).toContainText('Preview');
+  await expect(fileMenu).toContainText('Download');
+  await expect(fileMenu).toContainText('Rename');
+  await expect(fileMenu).toContainText('Delete');
+  await fileMenu.getByRole('button', { name: 'Preview' }).click();
+  await expect(page.getByRole('dialog', { name: 'Text preview' })).toContainText(
+    'Explorer test preview',
+  );
+  await expect(page.getByRole('link', { name: 'Download' })).toHaveAttribute(
+    'href',
+    /\/api\/files\/download\?path=/,
+  );
+  await page.getByLabel('Close preview').click();
+
+  await page.getByTestId('file-tile-readme-txt').click({ button: 'right' });
+  await page.getByRole('button', { name: 'Rename' }).click();
+  await page.getByLabel('New name').fill('readme-renamed.txt');
+  await page
+    .getByRole('dialog', { name: 'Rename item' })
+    .getByRole('button', { name: 'Rename' })
+    .click();
+  await expect(page.getByTestId('file-tile-readme-renamed-txt')).toBeVisible();
+
+  await page.getByTestId('file-tile-readme-renamed-txt').click({ button: 'right' });
+  await page
+    .getByRole('menu', { name: 'File actions' })
+    .getByRole('button', { name: 'Delete' })
+    .click();
+  await page
+    .getByRole('dialog', { name: 'Delete item' })
+    .getByRole('button', { name: 'Delete' })
+    .click();
+  await expect(page.getByTestId('files-grid')).not.toContainText('readme-renamed.txt');
+
+  await page.getByRole('button', { name: 'Up' }).click();
+  await expect(page.getByRole('button', { name: 'Upload' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'New folder' })).toBeVisible();
+  await page.getByRole('button', { name: 'Upload' }).click();
+  await page.locator('input[type="file"]').setInputFiles({
+    name: 'upload.txt',
+    mimeType: 'text/plain',
+    buffer: Buffer.from('uploaded from test\n'),
+  });
+  await expect(page.getByTestId('file-tile-upload-txt')).toBeVisible();
+});
+
+test('files page shows API failures clearly', async ({ page, request }) => {
+  await requireBackend(request);
+  await mockAuthenticatedShell(page, [], {
+    files: {
+      failList: true,
+    },
+  });
+
+  await page.getByRole('button', { name: 'Files' }).click();
+  await expect(page.getByRole('alert')).toContainText('files unavailable');
 });
 
 test('authenticated app shell visual smoke @visual', async ({
