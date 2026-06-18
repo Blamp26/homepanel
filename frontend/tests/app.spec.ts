@@ -504,7 +504,12 @@ async function mockAuthenticatedShell(
       );
     const childrenOf = (dir: string) =>
       sortFiles(
-        fileState.filter((entry) => dirname(entry.path) === normalizePath(dir)),
+        fileState
+          .filter((entry) => dirname(entry.path) === normalizePath(dir))
+          .map((entry) => ({
+            ...entry,
+            name: basename(entry.path),
+          })),
       );
     const getEntry = (candidate: string) =>
       fileState.find((entry) => entry.path === normalizePath(candidate));
@@ -1146,7 +1151,7 @@ test('files page behaves like an explorer', async ({
   await expect(page.getByTestId('files-address')).toHaveValue('/srv');
   await page.getByRole('button', { name: 'Forward' }).click();
   await expect(page.getByTestId('files-address')).toHaveValue('/srv/app');
-  await page.getByRole('button', { name: 'Up' }).click();
+  await page.getByTestId('files-topbar').getByRole('button', { name: 'Up' }).click();
   await expect(page.getByTestId('files-address')).toHaveValue('/srv');
 
   await page.getByTestId('files-address').fill('/not-allowed');
@@ -1158,6 +1163,9 @@ test('files page behaves like an explorer', async ({
   await expect(page.getByTestId('files-address')).toHaveValue('/mnt');
   await expect(page.getByRole('alert')).toHaveCount(0);
   await expect(page.getByTestId('file-tile-games')).toBeVisible();
+
+  await serverLocation.click();
+  await expect(page.getByTestId('files-address')).toHaveValue('/srv');
 
   await page.getByRole('button', { name: 'New folder' }).click();
   await page.getByLabel('Folder name').fill('sandbox');
@@ -1189,6 +1197,8 @@ test('files page behaves like an explorer', async ({
     .click();
   await expect(page.getByTestId('files-grid')).not.toContainText('sandbox-renamed');
 
+  await page.getByTestId('file-tile-app').dblclick();
+  await expect(page.getByTestId('files-address')).toHaveValue('/srv/app');
   await page.getByTestId('file-tile-readme-txt').click({ button: 'right' });
   const fileMenu = page.getByRole('menu', { name: 'File actions' });
   await expect(fileMenu).toContainText('Preview');
@@ -1203,7 +1213,10 @@ test('files page behaves like an explorer', async ({
     'href',
     /\/api\/files\/download\?path=/,
   );
-  await page.getByLabel('Close preview').click();
+  await page
+    .getByRole('dialog', { name: 'Text preview' })
+    .getByRole('button', { name: 'Close preview' })
+    .click();
 
   await page.getByTestId('file-tile-readme-txt').click({ button: 'right' });
   await page.getByRole('button', { name: 'Rename' }).click();
@@ -1225,7 +1238,7 @@ test('files page behaves like an explorer', async ({
     .click();
   await expect(page.getByTestId('files-grid')).not.toContainText('readme-renamed.txt');
 
-  await page.getByRole('button', { name: 'Up' }).click();
+  await page.getByTestId('files-topbar').getByRole('button', { name: 'Up' }).click();
   await expect(page.getByRole('button', { name: 'Upload' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'New folder' })).toBeVisible();
   await page.getByRole('button', { name: 'Upload' }).click();

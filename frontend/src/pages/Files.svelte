@@ -70,7 +70,8 @@
   $: filteredEntries = entries.filter((entry) =>
     entry.name.toLowerCase().includes(searchQuery.trim().toLowerCase()),
   );
-  $: contextMenuItem = entries.find((entry) => entry.path === getContextEntryPath()) ?? null;
+  $: contextMenuPath = contextMenu && contextMenu.mode === 'entry' ? contextMenu.path : '';
+  $: contextMenuItem = entries.find((entry) => entry.path === contextMenuPath) ?? null;
 
   function normalizePath(path: string) {
     const trimmed = path.trim();
@@ -88,7 +89,10 @@
   }
 
   function slugify(value: string) {
-    return value.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+    return value
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
   }
 
   function compareEntries(a: FileEntry, b: FileEntry) {
@@ -244,10 +248,6 @@
       return raw.replace(/^"|"$/g, '').trim();
     }
     return raw.replace(/^"|"$/g, '').trim();
-  }
-
-  function getContextEntryPath() {
-    return contextMenu?.mode === 'entry' ? contextMenu.path : '';
   }
 
   function clearTransientErrors() {
