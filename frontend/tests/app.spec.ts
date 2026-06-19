@@ -44,6 +44,37 @@ type ServiceFixture = {
   logs: string[];
 };
 
+type ServerActionFixture = {
+  ok: boolean;
+  exit_code: number | null;
+  stdout: string;
+  stderr: string;
+  error?: string;
+};
+
+type ServerFixture = {
+  id: string;
+  name: string;
+  description?: string | null;
+  working_dir?: string | null;
+  start_script?: string | null;
+  stop_script?: string | null;
+  restart_script?: string | null;
+  log_type?: 'file' | 'journal' | null;
+  log_path?: string | null;
+  log_unit?: string | null;
+  status_type?: 'manual' | 'process' | 'systemd' | 'tcp' | 'http' | null;
+  status_value?: string | null;
+  status: {
+    state: 'running' | 'stopped' | 'unknown';
+    detail?: string | null;
+  };
+  created_at?: string;
+  updated_at?: string;
+  logs?: string[];
+  actionResponses?: Partial<Record<'start' | 'stop' | 'restart', ServerActionFixture>>;
+};
+
 type FileFixture = {
   path: string;
   kind: 'file' | 'dir' | 'symlink' | 'other';
@@ -333,6 +364,7 @@ async function mockAuthenticatedShell(
     };
     auth?: AuthFixture;
     services?: ServiceFixture[];
+    servers?: ServerFixture[];
     files?: FilesFixtureOptions;
     overview?: OverviewFixture;
     overviewSequence?: OverviewSequenceEntry[];
@@ -351,8 +383,16 @@ async function mockAuthenticatedShell(
 
   let state = terminals.slice();
   const serviceState = options?.services ?? [];
+  let serverState = (options?.servers ?? []).map((server) => ({
+    created_at: '2026-06-19T00:00:00Z',
+    updated_at: '2026-06-19T00:00:00Z',
+    logs: [],
+    actionResponses: {},
+    ...server,
+  }));
   const serviceActions: string[] = [];
   const serviceLogRequests: Array<{ name: string; lines: number }> = [];
+  const serverActions: string[] = [];
   const fileRoots = options?.files?.roots ?? ['/home', '/srv', '/DATA'];
   const visibleRoots =
     options?.files?.visibleRoots ?? fileRoots.filter((root) => root !== '/DATA');
@@ -623,6 +663,154 @@ async function mockAuthenticatedShell(
     });
   });
 
+  await page.route('**/api/servers**', async (route) => {
+    const url = new URL(route.request().url());
+    const method = route.request().method();
+    const parts = url.pathname.split('/').filter(Boolean);
+    const serverId = decodeURIComponent(parts[2] ?? '');
+    const server = serverState.find((item) => item.id === serverId);
+
+    if (method === 'GET' && url.pathname === '/api/servers') {
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ items: serverState }),
+      });
+      return;
+    }
+
+    if (method === 'POST' && url.pathname === '/api/servers') {
+      const body = JSON.parse(route.request().postData() ?? '{}') as Record<string, unknown>;
+      const created: ServerFixture = {
+        id: `server-${serverState.length + 1}`,
+        name: String(body.name ?? 'Server'),
+        description: typeof body.description === 'string' ? body.description : null,
+        working_dir: null,
+        start_script: null,
+        stop_script: null,
+        restart_script: null,
+        log_type: null,
+        log_path: null,
+        log_unit: null,
+        status_type: null,
+        status_value: null,
+        status: { state: 'unknown', detail: 'Manual status' },
+        created_at: '2026-06-19T00:00:00Z',
+        updated_at: '2026-06-19T00:00:00Z',
+        logs: [],
+        actionResponses: {},
+      };
+      serverState = [created, ...serverState];
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify(created),
+      });
+      return;
+    }
+
+    if (method === 'GET' && url.pathname.endsWith('/logs')) {
+      if (!server) {
+        await route.fulfill({
+          status: 404,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: { code: 'not_found', message: 'not found' } }),
+        });
+        return;
+      }
+      const lines = Number(url.searchParams.get('lines') ?? '200');
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          items: (server.logs ?? []).slice(Math.max(0, (server.logs ?? []).length - lines)),
+        }),
+      });
+      return;
+    }
+
+    if (method === 'GET' && parts.length === 3 && parts[1] === 'servers') {
+      if (!server) {
+        await route.fulfill({
+          status: 404,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: { code: 'not_found', message: 'not found' } }),
+        });
+        return;
+      }
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify(server),
+      });
+      return;
+    }
+
+    if (method === 'PATCH' && parts.length === 3 && parts[1] === 'servers') {
+      if (!server) {
+        await route.fulfill({
+          status: 404,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: { code: 'not_found', message: 'not found' } }),
+        });
+        return;
+      }
+      const body = JSON.parse(route.request().postData() ?? '{}') as Record<string, unknown>;
+      const updated = {
+        ...server,
+        ...body,
+        updated_at: '2026-06-19T00:01:00Z',
+      };
+      serverState = serverState.map((item) => (item.id === server.id ? updated : item));
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify(updated),
+      });
+      return;
+    }
+
+    if (method === 'DELETE' && parts.length === 3 && parts[1] === 'servers') {
+      serverState = serverState.filter((item) => item.id !== serverId);
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ ok: true }),
+      });
+      return;
+    }
+
+    if (method === 'POST' && parts.length === 4 && parts[1] === 'servers') {
+      if (!server) {
+        await route.fulfill({
+          status: 404,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: { code: 'not_found', message: 'not found' } }),
+        });
+        return;
+      }
+      const action = parts[3] as 'start' | 'stop' | 'restart';
+      serverActions.push(`${method} ${url.pathname}`);
+      const response = server.actionResponses?.[action] ?? {
+        ok: true,
+        exit_code: 0,
+        stdout: `${action} ok`,
+        stderr: '',
+      };
+      if (response.error) {
+        await route.fulfill({
+          status: 400,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            error: { code: 'bad_request', message: response.error },
+          }),
+        });
+        return;
+      }
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify(response),
+      });
+      return;
+    }
+
+    await route.fallback();
+  });
+
   await page.route('**/api/files**', async (route) => {
     const url = new URL(route.request().url());
     const method = route.request().method();
@@ -847,6 +1035,7 @@ async function mockAuthenticatedShell(
   return {
     getServiceActions: () => serviceActions.slice(),
     getServiceLogRequests: () => serviceLogRequests.slice(),
+    getServerActions: () => serverActions.slice(),
   };
 }
 
@@ -1499,6 +1688,192 @@ test('services log line selector requests more lines', async ({
     .poll(() => shell.getServiceLogRequests().at(-1)?.lines)
     .toBe(500);
   await expect(page.getByTestId('service-logs')).toContainText('line 001');
+});
+
+test('servers page opens and shows the empty state', async ({ page, request }) => {
+  await requireBackend(request);
+  await mockAuthenticatedShell(page, [], {
+    servers: [],
+  });
+
+  await expect(page.getByRole('button', { name: 'Game servers' })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Servers', exact: true }).click();
+  await expect(page.getByTestId('servers-page')).toBeVisible();
+  await expect(page.getByTestId('servers-empty')).toContainText(
+    'No servers yet. Add a server card and point it at your start/stop scripts.',
+  );
+  await expect(page.getByTestId('servers-empty')).toContainText(
+    '/home/superadmin/servers/minecraft/start.sh',
+  );
+});
+
+test('servers page can create a server card with only name', async ({
+  page,
+  request,
+}) => {
+  await requireBackend(request);
+  await mockAuthenticatedShell(page, [], {
+    servers: [],
+  });
+
+  await page.getByRole('button', { name: 'Servers', exact: true }).click();
+  await page.getByTestId('servers-add').click();
+  await expect(page.getByTestId('server-form-working-dir')).toHaveCount(0);
+  await expect(page.getByTestId('server-form-start-script')).toHaveCount(0);
+  await expect(page.getByTestId('server-form-log-type')).toHaveCount(0);
+  await expect(page.getByTestId('server-form-status-type')).toHaveCount(0);
+  await page.getByTestId('server-form-name').fill('Minecraft');
+  await page.getByTestId('server-form-submit').click();
+
+  await expect(page.getByTestId('server-card-minecraft')).toBeVisible();
+  await expect(page.getByTestId('server-detail-panel')).toContainText('Minecraft');
+  const header = page.getByTestId('server-detail-panel').locator('.server-context');
+  await expect(header.getByRole('button', { name: 'Edit details' })).toHaveCount(1);
+  await expect(header.getByRole('button', { name: 'Delete' })).toHaveCount(1);
+  await expect(header.getByRole('button', { name: 'Configure actions' })).toHaveCount(0);
+  await expect(header.getByRole('button', { name: 'Configure logs' })).toHaveCount(0);
+  await expect(header.getByRole('button', { name: 'Configure status' })).toHaveCount(0);
+  await expect(page.getByTestId('server-actions-empty')).toContainText('No actions configured');
+  await expect(page.getByTestId('server-logs-empty')).toContainText('No logs configured');
+  await expect(page.getByTestId('server-action-output')).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Status' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Start' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Stop' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Restart' })).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Edit details' }).click();
+  await page.getByTestId('server-form-name').fill('Minecraft Alpha');
+  await page.getByTestId('server-form-submit').click();
+  await expect(page.getByTestId('server-card-minecraft-alpha')).toBeVisible();
+
+  await page.getByRole('button', { name: 'Delete' }).click();
+  await page.getByTestId('server-delete-confirm').click();
+  await expect(page.getByTestId('servers-empty')).toBeVisible();
+});
+
+test('servers page disables start until actions are configured', async ({
+  page,
+  request,
+}) => {
+  await requireBackend(request);
+  await mockAuthenticatedShell(page, [], {
+    servers: [
+      {
+        id: 'minecraft',
+        name: 'Minecraft',
+        description: 'Survival world',
+        status: { state: 'unknown', detail: 'Manual status' },
+      },
+    ],
+  });
+
+  await page.getByRole('button', { name: 'Servers', exact: true }).click();
+  await expect(page.getByTestId('server-actions-empty')).toContainText('No actions configured');
+  await expect(page.getByRole('button', { name: 'Start' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Stop' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Restart' })).toHaveCount(0);
+  await expect(page.getByTestId('server-logs-empty')).toContainText('No logs configured');
+});
+
+test('servers page configure actions modal can save script paths', async ({
+  page,
+  request,
+}) => {
+  await requireBackend(request);
+  await mockAuthenticatedShell(page, [], {
+    servers: [
+      {
+        id: 'minecraft',
+        name: 'Minecraft',
+        description: 'Survival world',
+        status: { state: 'unknown', detail: 'Manual status' },
+      },
+    ],
+    files: {
+      entries: [
+        makeFileFixture({ path: '/home/superadmin/servers/minecraft', kind: 'dir' }),
+        makeFileFixture({ path: '/home/superadmin/servers/minecraft/start.sh', kind: 'file' }),
+        makeFileFixture({ path: '/home/superadmin/servers/minecraft/stop.sh', kind: 'file' }),
+        makeFileFixture({ path: '/home/superadmin/servers/minecraft/restart.sh', kind: 'file' }),
+      ],
+    },
+  });
+
+  await page.getByRole('button', { name: 'Servers', exact: true }).click();
+  await page
+    .getByTestId('server-detail-panel')
+    .getByRole('button', { name: 'Configure actions' })
+    .first()
+    .click();
+  await expect(page.getByTestId('server-actions-working-dir')).toHaveValue('');
+  await expect(page.getByTestId('server-actions-start-script')).toHaveValue('');
+  await expect(page.getByTestId('server-actions-stop-script')).toHaveValue('');
+  await expect(page.getByTestId('server-actions-restart-script')).toHaveValue('');
+  await page.getByTestId('server-actions-working-dir').fill('/home/superadmin/servers/minecraft');
+  await page.getByTestId('server-actions-start-script').fill('/home/superadmin/servers/minecraft/start.sh');
+  await page.getByTestId('server-actions-stop-script').fill('/home/superadmin/servers/minecraft/stop.sh');
+  await page.getByTestId('server-actions-restart-script').fill('/home/superadmin/servers/minecraft/restart.sh');
+  await page.getByTestId('server-actions-submit').click();
+
+  await expect(page.getByTestId('server-action-start')).toBeEnabled();
+  await expect(page.getByTestId('server-detail-panel')).toContainText(
+    '/home/superadmin/servers/minecraft/start.sh',
+  );
+});
+
+test('servers page shows logs and surfaces invalid script path errors', async ({
+  page,
+  request,
+}) => {
+  await requireBackend(request);
+  await mockAuthenticatedShell(page, [], {
+    servers: [
+      {
+        id: 'minecraft',
+        name: 'Minecraft',
+        description: 'File logs',
+        start_script: '/bad/start.sh',
+        log_type: 'file',
+        log_path: '/srv/logs/minecraft/latest.log',
+        status: { state: 'unknown', detail: 'Manual status' },
+        logs: ['booting', 'world ready'],
+        actionResponses: {
+          start: {
+            ok: false,
+            exit_code: null,
+            stdout: '',
+            stderr: '',
+            error: 'start script does not exist: /bad/start.sh',
+          },
+        },
+      },
+      {
+        id: 'proxy',
+        name: 'Proxy',
+        description: 'Journal logs',
+        log_type: 'journal',
+        log_unit: 'proxy.service',
+        status: { state: 'running', detail: 'active' },
+        logs: ['proxy booted', 'proxy ready'],
+      },
+    ],
+  });
+
+  await page.getByRole('button', { name: 'Servers', exact: true }).click();
+  const detailPanel = page.getByTestId('server-detail-panel');
+  await expect(page.getByTestId('server-logs')).toContainText('booting');
+  await page.getByTestId('server-logs-search').fill('ready');
+  await expect(page.getByTestId('server-logs')).toContainText('world ready');
+  await expect(page.getByTestId('server-logs')).not.toContainText('booting');
+
+  await page.getByTestId('server-card-proxy').click();
+  await expect(page.getByTestId('server-logs')).toContainText('proxy booted');
+
+  await page.getByTestId('server-card-minecraft').click();
+  await detailPanel.getByTestId('server-action-start').click();
+  await expect(page.getByTestId('server-action-error')).toContainText(
+    'start script does not exist',
+  );
 });
 
 test('dashboard keeps online status during a single failed refresh', async ({

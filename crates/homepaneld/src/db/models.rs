@@ -22,3 +22,21 @@ pub struct SessionRow {
     pub user_agent: Option<String>,
     pub ip: Option<String>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct ServerRow {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub working_dir: Option<String>,
+    pub start_script: Option<String>,
+    pub stop_script: Option<String>,
+    pub restart_script: Option<String>,
+    pub log_type: Option<String>,
+    pub log_path: Option<String>,
+    pub log_unit: Option<String>,
+    pub status_type: Option<String>,
+    pub status_value: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}

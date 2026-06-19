@@ -8,7 +8,7 @@
     'files',
     'services',
     'logs',
-    'game servers',
+    'servers',
     'settings',
   ];
 </script>

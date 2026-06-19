@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod files;
 pub mod overview;
+pub mod servers;
 pub mod settings;
 pub mod services;
 pub mod system;
@@ -45,5 +46,16 @@ pub fn router() -> Router<AppState> {
         .route("/api/services/:name/stop", post(services::stop))
         .route("/api/services/:name/restart", post(services::restart))
         .route("/api/services/:name/logs", get(services::logs))
+        .route("/api/servers", get(servers::list).post(servers::create))
+        .route(
+            "/api/servers/:id",
+            get(servers::get)
+                .patch(servers::update)
+                .delete(servers::delete),
+        )
+        .route("/api/servers/:id/start", post(servers::start))
+        .route("/api/servers/:id/stop", post(servers::stop))
+        .route("/api/servers/:id/restart", post(servers::restart))
+        .route("/api/servers/:id/logs", get(servers::logs))
         .route("/api/settings", get(settings::get).patch(settings::update))
 }

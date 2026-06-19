@@ -6,6 +6,7 @@
   import TerminalView from './components/terminal/TerminalView.svelte';
   import DashboardPage from './pages/Dashboard.svelte';
   import FilesPage from './pages/Files.svelte';
+  import ServersPage from './pages/Servers.svelte';
   import {
     clearTerminalScrollback,
     createTerminal,
@@ -31,7 +32,7 @@
     | 'files'
     | 'services'
     | 'logs'
-    | 'game servers'
+    | 'servers'
     | 'settings';
 
   const pages: Array<{ value: Page; label: string; state: 'ready' | 'soon' }> =
@@ -41,7 +42,7 @@
       { value: 'files', label: 'Files', state: 'ready' },
       { value: 'services', label: 'Services', state: 'ready' },
       { value: 'logs', label: 'Logs', state: 'soon' },
-      { value: 'game servers', label: 'Game servers', state: 'soon' },
+      { value: 'servers', label: 'Servers', state: 'ready' },
       { value: 'settings', label: 'Settings', state: 'soon' },
     ];
 
@@ -1259,6 +1260,8 @@ No visible log lines match the current filter.
             {/if}
           </section>
         </section>
+      {:else if page === 'servers'}
+        <ServersPage />
       {:else}
         <section class="simple-page">
           <div class="empty-page">

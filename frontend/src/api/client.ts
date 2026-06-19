@@ -15,6 +15,17 @@ export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+export async function apiPatch<T>(path: string, body?: unknown): Promise<T> {
+  const response = await fetch(path, {
+    method: 'PATCH',
+    credentials: 'include',
+    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!response.ok) throw new Error(await response.text());
+  return response.json() as Promise<T>;
+}
+
 export async function apiDelete<T>(path: string, body?: unknown): Promise<T> {
   const response = await fetch(path, {
     method: 'DELETE',
