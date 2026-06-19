@@ -1,4 +1,4 @@
-use crate::state::AppState;
+use crate::state::{AppState, CpuSample};
 use axum::{extract::State, response::IntoResponse, Json};
 use nix::sys::statvfs::statvfs;
 use serde::Serialize;
@@ -31,6 +31,7 @@ pub struct OverviewResponse {
     pub hostname: Option<String>,
     pub uptime_seconds: Option<u64>,
     pub load_average: Option<[f64; 3]>,
+    pub cpu_usage_percent: Option<f64>,
     pub memory_total_bytes: Option<u64>,
     pub memory_available_bytes: Option<u64>,
     pub memory_used_bytes: Option<u64>,
@@ -50,11 +51,15 @@ fn read_meminfo() -> HashMap<String, u64> {
 
     let mut values = HashMap::new();
     for line in contents.lines() {
-        let Some((key, value)) = line.split_once(':') else {
+        let mut parts = line.split_whitespace();
+        let Some(raw_key) = parts.next() else {
             continue;
         };
-        let numeric = value.split_whitespace().next().and_then(|value| value.parse().ok());
-        if let Some(number) = numeric {
+        let Some(raw_value) = parts.next() else {
+            continue;
+        };
+        let key = raw_key.trim_end_matches(':');
+        if let Ok(number) = raw_value.parse::<u64>() {
             values.insert(key.to_string(), number);
         }
     }
@@ -81,6 +86,61 @@ fn read_load_average() -> Option<[f64; 3]> {
         .take(3)
         .filter_map(|value| value.parse::<f64>().ok());
     Some([values.next()?, values.next()?, values.next()?])
+}
+
+fn read_cpu_sample() -> Option<CpuSample> {
+    let contents = fs::read_to_string("/proc/stat").ok()?;
+    let line = contents.lines().find(|line| line.starts_with("cpu "))?;
+    let mut parts = line.split_whitespace();
+    let _cpu = parts.next()?;
+
+    let user = parts.next()?.parse::<u64>().ok()?;
+    let nice = parts.next()?.parse::<u64>().ok()?;
+    let system = parts.next()?.parse::<u64>().ok()?;
+    let idle = parts.next()?.parse::<u64>().ok()?;
+    let iowait = parts.next()?.parse::<u64>().ok()?;
+    let irq = parts.next()?.parse::<u64>().ok()?;
+    let softirq = parts.next()?.parse::<u64>().ok()?;
+    let steal = parts.next()?.parse::<u64>().ok()?;
+
+    let _guest = parts.next().and_then(|value| value.parse::<u64>().ok()).unwrap_or(0);
+    let _guest_nice = parts
+        .next()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+
+    let total = user
+        .saturating_add(nice)
+        .saturating_add(system)
+        .saturating_add(idle)
+        .saturating_add(iowait)
+        .saturating_add(irq)
+        .saturating_add(softirq)
+        .saturating_add(steal);
+    let idle_all = idle.saturating_add(iowait);
+
+    Some(CpuSample { total, idle_all })
+}
+
+fn read_cpu_usage_percent(state: &AppState) -> Option<f64> {
+    let current = read_cpu_sample()?;
+    let mut previous = state.cpu_sample.lock().ok()?;
+    let usage = previous.as_ref().and_then(|sample| {
+        if current.total <= sample.total || current.idle_all < sample.idle_all {
+            return None;
+        }
+
+        let total_delta = current.total - sample.total;
+        let idle_delta = current.idle_all - sample.idle_all;
+        if total_delta == 0 {
+            return None;
+        }
+
+        let usage = 100.0 * (1.0 - (idle_delta as f64 / total_delta as f64));
+        Some(usage.clamp(0.0, 100.0))
+    });
+    *previous = Some(current);
+    usage
 }
 
 fn disk_usage(mount_point: &Path) -> Option<DiskUsage> {
@@ -165,7 +225,7 @@ async fn read_service_counts() -> ServiceCounts {
         let sub = parts.next().unwrap_or_default().to_lowercase();
 
         if active.is_empty() {
-          continue;
+            continue;
         }
 
         total += 1;
@@ -261,12 +321,14 @@ pub async fn get(State(state): State<AppState>) -> impl IntoResponse {
     let service_summary = read_service_counts().await;
     let hostname = read_hostname();
     let database_path = resolve_sqlite_database_path(&state.config.data.database_url);
+    let cpu_usage_percent = read_cpu_usage_percent(&state);
 
     Json(OverviewResponse {
         api_status: "online".to_string(),
         hostname,
         uptime_seconds,
         load_average: read_load_average(),
+        cpu_usage_percent,
         memory_total_bytes,
         memory_available_bytes,
         memory_used_bytes,

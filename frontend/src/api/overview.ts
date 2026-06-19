@@ -18,6 +18,7 @@ export type OverviewResponse = {
   hostname: string | null;
   uptime_seconds: number | null;
   load_average: [number, number, number] | null;
+  cpu_usage_percent: number | null;
   memory_total_bytes: number | null;
   memory_available_bytes: number | null;
   memory_used_bytes: number | null;

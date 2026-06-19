@@ -11,6 +11,10 @@
   let loading = true;
   let error = '';
   let requestToken = 0;
+  let refreshing = false;
+  let pollTimer: ReturnType<typeof setInterval> | null = null;
+  let requestInFlight = false;
+  type OverviewDisk = OverviewResponse['disks'][number];
 
   function formatBytes(bytes: number | null | undefined) {
     if (bytes === null || bytes === undefined || Number.isNaN(bytes)) {
@@ -30,11 +34,13 @@
     return `${value.toFixed(digits)} ${units[unit]}`;
   }
 
-  function formatLoad(load: [number, number, number] | null | undefined) {
-    if (!load) return 'n/a';
-    return load
-      .map((value) => (Number.isFinite(value) ? value.toFixed(2) : 'n/a'))
-      .join(' / ');
+  function formatCpuUsage(percent: number | null | undefined) {
+    if (percent === null || percent === undefined || Number.isNaN(percent)) {
+      return 'n/a';
+    }
+
+    const digits = percent < 10 ? 1 : 0;
+    return `${percent.toFixed(digits)}%`;
   }
 
   function formatUptime(seconds: number | null | undefined) {
@@ -77,38 +83,75 @@
     return `${usedText} / ${totalText}`;
   }
 
-  function diskForMount(mountPoint: string) {
-    return overview?.disks.find((disk) => disk.mount_point === mountPoint) ?? null;
+  function formatMemorySummary() {
+    if (
+      overview?.memory_used_bytes === null ||
+      overview?.memory_used_bytes === undefined ||
+      overview?.memory_total_bytes === null ||
+      overview?.memory_total_bytes === undefined
+    ) {
+      return 'n/a';
+    }
+
+    return formatCapacity(overview.memory_used_bytes, overview.memory_total_bytes);
+  }
+
+  function sameDiskSignature(left: OverviewDisk | null, right: OverviewDisk | null) {
+    return (
+      !!left &&
+      !!right &&
+      left.total_bytes === right.total_bytes &&
+      left.available_bytes === right.available_bytes &&
+      left.used_bytes === right.used_bytes
+    );
+  }
+
+  async function refreshOverview() {
+    if (requestInFlight) return;
+
+    const token = ++requestToken;
+    requestInFlight = true;
+    refreshing = true;
+    if (!overview) {
+      loading = true;
+    }
+
+    try {
+      const response = await getOverview();
+      if (token !== requestToken) return;
+      overview = response;
+      error = '';
+    } catch (err) {
+      if (token !== requestToken) return;
+      if (!overview) {
+        error = err instanceof Error ? err.message : String(err);
+        overview = null;
+      }
+    } finally {
+      if (token === requestToken) {
+        loading = false;
+        refreshing = false;
+        requestInFlight = false;
+      }
+    }
   }
 
   function formatList(values: string[]) {
     return values.length > 0 ? values.join(', ') : 'n/a';
   }
 
-  function refreshOverview() {
-    const token = ++requestToken;
-    loading = true;
-    error = '';
-
-    return getOverview()
-      .then((response) => {
-        if (token !== requestToken) return;
-        overview = response;
-      })
-      .catch((err) => {
-        if (token !== requestToken) return;
-        error = err instanceof Error ? err.message : String(err);
-        overview = null;
-      })
-      .finally(() => {
-        if (token === requestToken) {
-          loading = false;
-        }
-      });
-  }
-
   onMount(() => {
     void refreshOverview();
+    pollTimer = setInterval(() => {
+      void refreshOverview();
+    }, 2_000);
+
+    return () => {
+      if (pollTimer !== null) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+    };
   });
 
 </script>
@@ -122,8 +165,9 @@
         {#if overview}
           {formatUptime(overview.uptime_seconds) === 'n/a'
             ? 'Uptime unavailable'
-            : `Up ${formatUptime(overview.uptime_seconds)}`} · Load
-          {formatLoad(overview.load_average)} ·
+            : `Up ${formatUptime(overview.uptime_seconds)}`} · CPU
+          {formatCpuUsage(overview.cpu_usage_percent)} · RAM
+          {formatMemorySummary()} ·
           {formatList(overview.primary_ips)}
         {:else if loading}
           Loading server status...
@@ -134,7 +178,9 @@
     </div>
 
     <div class="dashboard-header-meta">
-      <span class="dashboard-pill">{error ? 'Offline' : overview ? 'Online' : 'Loading'}</span>
+      <span class="dashboard-pill">
+        {error && !overview ? 'Offline' : refreshing && overview ? 'Refreshing' : overview ? 'Online' : 'Loading'}
+      </span>
       <span class="dashboard-pill muted">v{overview?.version ?? 'n/a'}</span>
       {#if currentUser}
         <span class="dashboard-pill muted">Signed in as {currentUser}</span>
@@ -156,9 +202,9 @@
 
   <section class="metric-grid" aria-label="Server stats">
     <article class="metric-card" data-testid="dashboard-metric-load">
-      <span>CPU load</span>
-      <strong>{formatLoad(overview?.load_average)}</strong>
-      <small>1m / 5m / 15m</small>
+      <span>CPU</span>
+      <strong>{formatCpuUsage(overview?.cpu_usage_percent)}</strong>
+      <small>Live usage</small>
     </article>
 
     <article class="metric-card" data-testid="dashboard-metric-memory">
@@ -399,13 +445,13 @@
           </div>
           <strong>
             {formatCapacity(
-              diskForMount('/')?.used_bytes,
-              diskForMount('/')?.total_bytes,
+              overview?.disks.find((disk) => disk.mount_point === '/')?.used_bytes,
+              overview?.disks.find((disk) => disk.mount_point === '/')?.total_bytes,
             )}
           </strong>
         </div>
 
-        {#if diskForMount('/mnt/games')}
+        {#if overview?.disks.find((disk) => disk.mount_point === '/mnt/games')}
           <div class="mount-row" data-testid="dashboard-mount-games">
             <div>
               <span>/mnt/games</span>
@@ -413,14 +459,18 @@
             </div>
             <strong>
               {formatCapacity(
-                diskForMount('/mnt/games')?.used_bytes,
-                diskForMount('/mnt/games')?.total_bytes,
+                overview?.disks.find((disk) => disk.mount_point === '/mnt/games')?.used_bytes,
+                overview?.disks.find((disk) => disk.mount_point === '/mnt/games')?.total_bytes,
               )}
             </strong>
           </div>
         {/if}
 
-        {#if diskForMount('/var/lib/homepanel')}
+        {#if overview?.disks.find((disk) => disk.mount_point === '/var/lib/homepanel') &&
+          !sameDiskSignature(
+            overview?.disks.find((disk) => disk.mount_point === '/var/lib/homepanel') ?? null,
+            overview?.disks.find((disk) => disk.mount_point === '/') ?? null,
+          )}
           <div class="mount-row" data-testid="dashboard-mount-homepanel">
             <div>
               <span>/var/lib/homepanel</span>
@@ -428,8 +478,8 @@
             </div>
             <strong>
               {formatCapacity(
-                diskForMount('/var/lib/homepanel')?.used_bytes,
-                diskForMount('/var/lib/homepanel')?.total_bytes,
+                overview?.disks.find((disk) => disk.mount_point === '/var/lib/homepanel')?.used_bytes,
+                overview?.disks.find((disk) => disk.mount_point === '/var/lib/homepanel')?.total_bytes,
               )}
             </strong>
           </div>

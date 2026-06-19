@@ -59,6 +59,7 @@ type OverviewFixture = {
   hostname?: string | null;
   uptime_seconds?: number | null;
   load_average?: [number, number, number] | null;
+  cpu_usage_percent?: number | null;
   memory_total_bytes?: number | null;
   memory_used_bytes?: number | null;
   disks?: Array<{
@@ -329,6 +330,7 @@ async function mockAuthenticatedShell(
     services?: ServiceFixture[];
     files?: FilesFixtureOptions;
     overview?: OverviewFixture;
+    overviewSequence?: OverviewFixture[];
     overviewFailure?: boolean;
   },
 ) {
@@ -403,6 +405,7 @@ async function mockAuthenticatedShell(
     hostname: 'homepanel',
     uptime_seconds: 93_600,
     load_average: [0.12, 0.08, 0.05],
+    cpu_usage_percent: 12,
     memory_total_bytes: 8 * 1024 ** 3,
     memory_used_bytes: 4 * 1024 ** 3,
     disks: [
@@ -449,6 +452,14 @@ async function mockAuthenticatedShell(
     version: '0.1.0',
     ...(options?.overview ?? {}),
   };
+  const overviewStates = (options?.overviewSequence?.length
+    ? options.overviewSequence
+    : [options?.overview ?? {}]
+  ).map((overrides) => ({
+    ...overviewState,
+    ...overrides,
+  }));
+  let overviewRequestCount = 0;
 
   await page.route('/api/auth/status', async (route) => {
     await route.fulfill({
@@ -581,9 +592,12 @@ async function mockAuthenticatedShell(
       return;
     }
 
+    const nextOverview =
+      overviewStates[Math.min(overviewRequestCount, overviewStates.length - 1)] ?? overviewState;
+    overviewRequestCount += 1;
     await route.fulfill({
       contentType: 'application/json',
-      body: JSON.stringify(overviewState),
+      body: JSON.stringify(nextOverview),
     });
   });
 
@@ -1258,6 +1272,7 @@ test('overview opens as a real dashboard', async ({ page, request }) => {
       hostname: 'orchard',
       uptime_seconds: 3_665,
       load_average: [0.42, 0.31, 0.25],
+      cpu_usage_percent: 0.33,
       memory_total_bytes: 8 * 1024 ** 3,
       memory_available_bytes: 5 * 1024 ** 3,
       memory_used_bytes: 3 * 1024 ** 3,
@@ -1286,6 +1301,14 @@ test('overview opens as a real dashboard', async ({ page, request }) => {
       database_path: '/var/lib/homepanel/homepanel.db',
       version: '0.1.0',
     },
+    overviewSequence: [
+      {
+        cpu_usage_percent: 0.33,
+      },
+      {
+        cpu_usage_percent: 23,
+      },
+    ],
   });
 
   await page.getByRole('button', { name: 'Overview', exact: true }).click();
@@ -1296,10 +1319,20 @@ test('overview opens as a real dashboard', async ({ page, request }) => {
   await expect(page.getByTestId('dashboard-summary')).toContainText(
     '192.168.1.20',
   );
+  await expect(page.getByTestId('dashboard-summary')).toContainText('CPU 0.3%');
+  await expect(page.getByTestId('dashboard-summary')).toContainText('RAM 3.00 GiB / 8.00 GiB');
+  await expect(page.getByTestId('dashboard-summary')).not.toContainText('Load');
+  await expect(page.getByTestId('dashboard-metric-load').locator('strong')).toHaveText(
+    '0.3%',
+  );
+  await expect(page.getByTestId('dashboard-metric-load')).toContainText('Live usage');
   await expect(page.getByTestId('dashboard-metric-memory')).toContainText(
     '3.00 GiB / 8.00 GiB',
   );
   await expect(page.getByTestId('dashboard-metric-root-disk')).toContainText('40%');
+  await expect(page.getByTestId('dashboard-metric-root-disk')).not.toContainText(
+    'n/a',
+  );
   await expect(page.getByTestId('dashboard-metric-games-disk')).toContainText('40%');
   await expect(page.getByTestId('dashboard-metric-terminals')).toContainText('0');
   await expect(page.getByTestId('dashboard-metric-failed-services')).toContainText(
@@ -1309,9 +1342,20 @@ test('overview opens as a real dashboard', async ({ page, request }) => {
   await expect(page.getByTestId('dashboard-health')).toContainText(
     '/var/lib/homepanel',
   );
+  await expect(page.getByTestId('dashboard-mount-games')).toContainText(
+    '/mnt/games',
+  );
+  await expect(page.getByTestId('dashboard-mount-root')).toContainText(
+    '40.0 GiB / 100 GiB',
+  );
   await expect(page.getByTestId('dashboard-storage')).not.toContainText(
     '/var/lib/homepanel',
   );
+  await expect(page.getByTestId('dashboard-summary')).toContainText('CPU 23%');
+  await expect(page.getByTestId('dashboard-metric-load').locator('strong')).toHaveText(
+    '23%',
+  );
+  await expect(page.getByTestId('dashboard-summary')).not.toContainText('Load');
 
   await page.getByRole('button', { name: 'Overview', exact: true }).click();
   await expect(page.getByTestId('dashboard-page')).toBeVisible();
