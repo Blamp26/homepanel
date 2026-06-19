@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod overview;
 pub mod files;
 pub mod logs;
 pub mod settings;
@@ -32,6 +33,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/system/network", get(system::network))
         .route("/api/system/processes", get(system::processes))
         .route("/api/system/metrics/ws", get(system::metrics_ws))
+        .route("/api/overview", get(overview::get))
         .route("/api/files", get(files::list).delete(files::delete))
         .route("/api/files/preview", get(files::preview))
         .route("/api/files/mkdir", post(files::mkdir))

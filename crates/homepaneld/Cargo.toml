@@ -13,6 +13,7 @@ futures.workspace = true
 homepanel-agent = { path = "../homepanel-agent" }
 homepanel-core = { path = "../homepanel-core" }
 hex.workspace = true
+nix.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

@@ -4,6 +4,7 @@
   import ServiceActionDialog from './components/services/ServiceActionDialog.svelte';
   import TerminalTabs from './components/terminal/TerminalTabs.svelte';
   import TerminalView from './components/terminal/TerminalView.svelte';
+  import DashboardPage from './pages/Dashboard.svelte';
   import FilesPage from './pages/Files.svelte';
   import {
     clearTerminalScrollback,
@@ -665,7 +666,9 @@
         </div>
       </header>
 
-      {#if page === 'terminals'}
+      {#if page === 'dashboard'}
+        <DashboardPage currentUser={user} onNavigate={selectPage} />
+      {:else if page === 'terminals'}
         <section class="terminal-page" aria-label="Terminal sessions">
           <div class="session-panel">
             <div class="panel-head">
@@ -794,19 +797,6 @@
               </div>
             {/if}
           </section>
-        </section>
-      {:else if page === 'dashboard'}
-        <section class="simple-page">
-          <div class="summary-grid">
-            <article>
-              <span>Open terminals</span>
-              <strong>{visibleTerminals.length}</strong>
-            </article>
-            <article>
-              <span>Selected terminal</span>
-              <strong>{activeTerminal?.name ?? 'None'}</strong>
-            </article>
-          </div>
         </section>
       {:else if page === 'files'}
         <FilesPage />

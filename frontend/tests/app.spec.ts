@@ -54,6 +54,31 @@ type FileFixture = {
   allowedRoots?: string[];
 };
 
+type OverviewFixture = {
+  api_status?: string;
+  hostname?: string | null;
+  uptime_seconds?: number | null;
+  load_average?: [number, number, number] | null;
+  memory_total_bytes?: number | null;
+  memory_used_bytes?: number | null;
+  disks?: Array<{
+    mount_point: string;
+    total_bytes?: number | null;
+    used_bytes?: number | null;
+    available_bytes?: number | null;
+  }>;
+  primary_ips?: string[];
+  terminal_count?: number;
+  service_summary?: {
+    total?: number | null;
+    running?: number | null;
+    failed?: number | null;
+  };
+  storage_path?: string;
+  database_path?: string | null;
+  version?: string;
+};
+
 type FilesFixtureOptions = {
   roots?: string[];
   visibleRoots?: string[];
@@ -303,6 +328,8 @@ async function mockAuthenticatedShell(
     auth?: AuthFixture;
     services?: ServiceFixture[];
     files?: FilesFixtureOptions;
+    overview?: OverviewFixture;
+    overviewFailure?: boolean;
   },
 ) {
   await installMockWebSocket(page, { scrollback: options?.scrollback });
@@ -371,6 +398,57 @@ async function mockAuthenticatedShell(
     path: normalizePath(entry.path),
   }));
   const filesFailure = options?.files?.failList ?? false;
+  const overviewState: OverviewFixture = {
+    api_status: 'online',
+    hostname: 'homepanel',
+    uptime_seconds: 93_600,
+    load_average: [0.12, 0.08, 0.05],
+    memory_total_bytes: 8 * 1024 ** 3,
+    memory_used_bytes: 4 * 1024 ** 3,
+    disks: [
+      {
+        mount_point: '/',
+        total_bytes: 128 * 1024 ** 3,
+        used_bytes: 64 * 1024 ** 3,
+        available_bytes: 64 * 1024 ** 3,
+      },
+      ...(fileState.some((entry) => entry.path === '/mnt/games')
+        ? [
+            {
+              mount_point: '/mnt/games',
+              total_bytes: 512 * 1024 ** 3,
+              used_bytes: 128 * 1024 ** 3,
+              available_bytes: 384 * 1024 ** 3,
+            },
+          ]
+        : []),
+      ...(fileState.some((entry) => entry.path === '/var/lib/homepanel')
+        ? [
+            {
+              mount_point: '/var/lib/homepanel',
+              total_bytes: 64 * 1024 ** 3,
+              used_bytes: 12 * 1024 ** 3,
+              available_bytes: 52 * 1024 ** 3,
+            },
+          ]
+        : []),
+    ],
+    primary_ips: ['192.168.1.10', '10.0.0.5'],
+    terminal_count: state.length,
+    service_summary: {
+      total: serviceState.length,
+      running: serviceState.filter(
+        ({ active, sub }) => active === 'active' || sub === 'running',
+      ).length,
+      failed: serviceState.filter(
+        ({ active, sub }) => active === 'failed' || sub === 'failed',
+      ).length,
+    },
+    storage_path: '/var/lib/homepanel',
+    database_path: '/var/lib/homepanel/homepanel.db',
+    version: '0.1.0',
+    ...(options?.overview ?? {}),
+  };
 
   await page.route('/api/auth/status', async (route) => {
     await route.fulfill({
@@ -489,6 +567,24 @@ async function mockAuthenticatedShell(
     }
 
     await route.fallback();
+  });
+
+  await page.route('**/api/overview', async (route) => {
+    if (options?.overviewFailure) {
+      await route.fulfill({
+        status: 503,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          error: { code: 'bad_request', message: 'overview unavailable' },
+        }),
+      });
+      return;
+    }
+
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify(overviewState),
+    });
   });
 
   await page.route('**/api/files**', async (route) => {
@@ -995,7 +1091,7 @@ test('services page opens and manages systemd units', async ({
     ],
   });
 
-  await page.getByRole('button', { name: 'Services' }).click();
+  await page.getByRole('button', { name: 'Services', exact: true }).click();
 
   await expect(
     page
@@ -1090,6 +1186,179 @@ test('services page opens and manages systemd units', async ({
   );
 });
 
+test('overview opens as a real dashboard', async ({ page, request }) => {
+  await requireBackend(request);
+  await mockAuthenticatedShell(page, [], {
+    services: [
+      {
+        name: 'homepanel.service',
+        load: 'loaded',
+        active: 'active',
+        sub: 'running',
+        description: 'HomePanel daemon',
+        unit_file_state: 'enabled',
+        details: {
+          name: 'homepanel.service',
+          load_state: 'loaded',
+          active_state: 'active',
+          sub_state: 'running',
+          unit_file_state: 'enabled',
+          description: 'HomePanel daemon',
+          fragment_path: '/usr/lib/systemd/system/homepanel.service',
+          main_pid: 1234,
+          memory_current: 1048576,
+          cpu_usage_nsec: 2048,
+        },
+        logs: ['2026-06-17 10:00:00 booted'],
+      },
+      {
+        name: 'minecraft.service',
+        load: 'loaded',
+        active: 'inactive',
+        sub: 'dead',
+        description: 'Minecraft server',
+        unit_file_state: 'enabled',
+        details: {
+          name: 'minecraft.service',
+          load_state: 'loaded',
+          active_state: 'inactive',
+          sub_state: 'dead',
+          unit_file_state: 'enabled',
+          description: 'Minecraft server',
+          fragment_path: '/usr/lib/systemd/system/minecraft.service',
+          main_pid: 0,
+          memory_current: null,
+          cpu_usage_nsec: null,
+        },
+        logs: ['2026-06-17 09:58:00 stopped'],
+      },
+      {
+        name: 'beammp.service',
+        load: 'loaded',
+        active: 'failed',
+        sub: 'failed',
+        description: 'BeamMP server',
+        unit_file_state: 'enabled',
+        details: {
+          name: 'beammp.service',
+          load_state: 'loaded',
+          active_state: 'failed',
+          sub_state: 'failed',
+          unit_file_state: 'enabled',
+          description: 'BeamMP server',
+          fragment_path: '/usr/lib/systemd/system/beammp.service',
+          main_pid: 0,
+          memory_current: null,
+          cpu_usage_nsec: null,
+        },
+        logs: ['2026-06-17 09:56:00 crashed'],
+      },
+    ],
+    overview: {
+      hostname: 'orchard',
+      uptime_seconds: 3_665,
+      load_average: [0.42, 0.31, 0.25],
+      memory_total_bytes: 8 * 1024 ** 3,
+      memory_available_bytes: 5 * 1024 ** 3,
+      memory_used_bytes: 3 * 1024 ** 3,
+      disks: [
+        {
+          mount_point: '/',
+          total_bytes: 100 * 1024 ** 3,
+          used_bytes: 40 * 1024 ** 3,
+          available_bytes: 60 * 1024 ** 3,
+        },
+        {
+          mount_point: '/mnt/games',
+          total_bytes: 500 * 1024 ** 3,
+          used_bytes: 200 * 1024 ** 3,
+          available_bytes: 300 * 1024 ** 3,
+        },
+      ],
+      primary_ips: ['192.168.1.20', '10.10.0.5'],
+      terminal_count: 0,
+      service_summary: {
+        total: 3,
+        running: 1,
+        failed: 1,
+      },
+      storage_path: '/var/lib/homepanel',
+      database_path: '/var/lib/homepanel/homepanel.db',
+      version: '0.1.0',
+    },
+  });
+
+  await page.getByRole('button', { name: 'Overview', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Overview', exact: true })).toBeVisible();
+  await expect(page.getByTestId('dashboard-page')).toBeVisible();
+  await expect(page.getByTestId('dashboard-hostname')).toHaveText('orchard');
+  await expect(page.getByTestId('dashboard-summary')).toContainText('1h 1m');
+  await expect(page.getByTestId('dashboard-summary')).toContainText(
+    '192.168.1.20',
+  );
+  await expect(page.getByTestId('dashboard-metric-memory')).toContainText(
+    '3.00 GiB / 8.00 GiB',
+  );
+  await expect(page.getByTestId('dashboard-metric-root-disk')).toContainText('40%');
+  await expect(page.getByTestId('dashboard-metric-games-disk')).toContainText('40%');
+  await expect(page.getByTestId('dashboard-metric-terminals')).toContainText('0');
+  await expect(page.getByTestId('dashboard-metric-failed-services')).toContainText(
+    '1',
+  );
+  await expect(page.getByTestId('dashboard-health')).toContainText('Online');
+  await expect(page.getByTestId('dashboard-health')).toContainText(
+    '/var/lib/homepanel',
+  );
+  await expect(page.getByTestId('dashboard-storage')).not.toContainText(
+    '/var/lib/homepanel',
+  );
+
+  await page.getByRole('button', { name: 'Overview', exact: true }).click();
+  await expect(page.getByTestId('dashboard-page')).toBeVisible();
+
+  await page.getByTestId('dashboard-action-terminals').click();
+  await expect(page.getByRole('heading', { name: 'Terminals' })).toBeVisible();
+  await page.getByRole('button', { name: 'Overview' }).click();
+  await expect(page.getByRole('heading', { name: 'Overview', exact: true })).toBeVisible();
+
+  await page.getByTestId('dashboard-action-files').click();
+  await expect(page.getByRole('heading', { name: 'Files' })).toBeVisible();
+  await page.getByRole('button', { name: 'Overview' }).click();
+  await expect(page.getByRole('heading', { name: 'Overview', exact: true })).toBeVisible();
+
+  await page.getByTestId('dashboard-action-services').click();
+  await expect(
+    page
+      .getByLabel('Systemd services')
+      .getByRole('heading', { name: 'Services' }),
+  ).toBeVisible();
+  await page.getByRole('button', { name: 'Overview' }).click();
+  await expect(page.getByRole('heading', { name: 'Overview', exact: true })).toBeVisible();
+
+  await page.getByTestId('dashboard-action-logs').click();
+  await expect(page.getByRole('heading', { name: 'Logs' })).toBeVisible();
+});
+
+test('overview shows an error state when the api fails', async ({
+  page,
+  request,
+}) => {
+  await requireBackend(request);
+  await mockAuthenticatedShell(page, [], {
+    overviewFailure: true,
+  });
+
+  await page.getByRole('button', { name: 'Overview', exact: true }).click();
+  await expect(page.getByTestId('dashboard-page')).toBeVisible();
+  await expect(page.getByTestId('dashboard-error')).toContainText(
+    'overview unavailable',
+  );
+  await expect(page.getByTestId('dashboard-health')).toContainText('Offline');
+  await expect(page.getByTestId('dashboard-metric-terminals')).toContainText(
+    'n/a',
+  );
+});
+
 test('files page behaves like an explorer', async ({
   page,
   request,
@@ -1102,7 +1371,7 @@ test('files page behaves like an explorer', async ({
     },
   });
 
-  await page.getByRole('button', { name: 'Files' }).click();
+  await page.getByRole('button', { name: 'Files', exact: true }).click();
   const homeLocation = page.getByTestId('quick-location-home');
   const gamesLocation = page.getByTestId('quick-location-games');
   const serverLocation = page.getByTestId('quick-location-server-data');
@@ -1258,7 +1527,7 @@ test('files page shows API failures clearly', async ({ page, request }) => {
     },
   });
 
-  await page.getByRole('button', { name: 'Files' }).click();
+  await page.getByRole('button', { name: 'Files', exact: true }).click();
   await expect(page.getByRole('alert')).toContainText('files unavailable');
 });
 
