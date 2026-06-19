@@ -4,17 +4,29 @@
 
   export let currentUser: string | null = null;
   export let onNavigate: (
-    page: 'terminals' | 'files' | 'services' | 'logs',
+    page: 'terminals' | 'files' | 'services',
   ) => void = () => {};
 
+  let lastGoodOverview: OverviewResponse | null = null;
   let overview: OverviewResponse | null = null;
   let loading = true;
-  let error = '';
+  let refreshError = '';
   let requestToken = 0;
-  let refreshing = false;
+  let isRefreshing = false;
+  let consecutiveFailures = 0;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let requestInFlight = false;
+  let apiStatus: 'Loading' | 'Online' | 'Offline';
   type OverviewDisk = OverviewResponse['disks'][number];
+
+  $: overview = lastGoodOverview;
+  $: apiStatus = lastGoodOverview
+    ? consecutiveFailures >= 2
+      ? 'Offline'
+      : 'Online'
+    : refreshError
+      ? 'Offline'
+      : 'Loading';
 
   function formatBytes(bytes: number | null | undefined) {
     if (bytes === null || bytes === undefined || Number.isNaN(bytes)) {
@@ -111,26 +123,25 @@
 
     const token = ++requestToken;
     requestInFlight = true;
-    refreshing = true;
-    if (!overview) {
+    isRefreshing = true;
+    if (!lastGoodOverview) {
       loading = true;
     }
 
     try {
       const response = await getOverview();
       if (token !== requestToken) return;
-      overview = response;
-      error = '';
+      lastGoodOverview = response;
+      refreshError = '';
+      consecutiveFailures = 0;
     } catch (err) {
       if (token !== requestToken) return;
-      if (!overview) {
-        error = err instanceof Error ? err.message : String(err);
-        overview = null;
-      }
+      refreshError = err instanceof Error ? err.message : String(err);
+      consecutiveFailures += 1;
     } finally {
       if (token === requestToken) {
         loading = false;
-        refreshing = false;
+        isRefreshing = false;
         requestInFlight = false;
       }
     }
@@ -179,9 +190,12 @@
 
     <div class="dashboard-header-meta">
       <span class="dashboard-pill">
-        {error && !overview ? 'Offline' : refreshing && overview ? 'Refreshing' : overview ? 'Online' : 'Loading'}
+        {apiStatus}
       </span>
       <span class="dashboard-pill muted">v{overview?.version ?? 'n/a'}</span>
+      {#if isRefreshing && overview && consecutiveFailures < 2}
+        <span class="dashboard-pill muted">Refreshing</span>
+      {/if}
       {#if currentUser}
         <span class="dashboard-pill muted">Signed in as {currentUser}</span>
       {/if}
@@ -194,9 +208,17 @@
     </div>
   {/if}
 
-  {#if error}
+  {#if refreshError && !overview}
     <div class="dashboard-banner error" role="alert" data-testid="dashboard-error">
-      {error}
+      {refreshError}
+    </div>
+  {:else if refreshError && overview && consecutiveFailures < 2}
+    <div class="dashboard-banner warning" role="status" data-testid="dashboard-error">
+      Latest refresh failed. Showing cached data.
+    </div>
+  {:else if refreshError && overview}
+    <div class="dashboard-banner error" role="alert" data-testid="dashboard-error">
+      {refreshError}
     </div>
   {/if}
 
@@ -323,7 +345,7 @@
       <div class="health-stack">
         <div class="health-row">
           <span>HomePanel API</span>
-          <strong>{error ? 'Offline' : 'Online'}</strong>
+          <strong>{apiStatus}</strong>
         </div>
         <div class="health-row">
           <span>Storage path</span>
@@ -411,7 +433,7 @@
           type="button"
           class="action-tile muted"
           data-testid="dashboard-action-logs"
-          on:click={() => onNavigate('logs')}
+          on:click={() => onNavigate('services')}
         >
           <span class="action-icon" aria-hidden="true">
             <svg viewBox="0 0 24 24">
@@ -422,8 +444,8 @@
             </svg>
           </span>
           <span class="action-copy">
-            <strong>Logs</strong>
-            <small>Review recent output</small>
+            <strong>Recent logs</strong>
+            <small>Open the Services log viewer</small>
           </span>
         </button>
       </div>
@@ -567,6 +589,12 @@
     border-color: #d8a6a6;
     background: var(--danger-soft);
     color: var(--danger);
+  }
+
+  .dashboard-banner.warning {
+    border-color: #d8c79f;
+    background: #fff6df;
+    color: #8b6512;
   }
 
   .metric-grid {

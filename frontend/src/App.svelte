@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import NewTerminalDialog from './components/terminal/NewTerminalDialog.svelte';
   import ServiceActionDialog from './components/services/ServiceActionDialog.svelte';
   import TerminalTabs from './components/terminal/TerminalTabs.svelte';
@@ -52,6 +52,7 @@
     { value: 'enabled', label: 'Enabled' },
     { value: 'important', label: 'Important' },
   ] as const;
+  const serviceLogLineOptions = [100, 200, 500, 1000] as const;
 
   let user: string | null = null;
   let loading = true;
@@ -70,9 +71,18 @@
   let servicesLoading = false;
   let servicesError = '';
   let serviceDetails: ServiceDetails | null = null;
+  let serviceDetailsError = '';
   let serviceDetailsLoading = false;
   let serviceLogs: string[] = [];
+  let serviceLogsError = '';
   let serviceLogsLoading = false;
+  let serviceLogLines: (typeof serviceLogLineOptions)[number] = 200;
+  let serviceLogSearch = '';
+  let serviceLogSearchQuery = '';
+  let visibleServiceLogs: string[] = [];
+  let serviceLogsAutoRefresh = false;
+  let serviceLogsAutoRefreshTimer: ReturnType<typeof setInterval> | null = null;
+  let serviceLogsCopyFeedback = '';
   let serviceActionLoading: 'start' | 'stop' | 'restart' | null = null;
   let serviceActionError = '';
   let serviceActionDialog:
@@ -81,7 +91,6 @@
         serviceName: string;
       }
     | null = null;
-  let serviceError = '';
   let selectedServiceName: string | null = null;
   let serviceSearch = '';
   let serviceFilter: 'all' | 'running' | 'failed' | 'enabled' | 'important' =
@@ -197,28 +206,47 @@
     return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
   }
 
-  async function loadSelectedService(name: string) {
+  async function loadServiceDetails(name: string) {
     serviceDetailsLoading = true;
-    serviceLogsLoading = true;
-    serviceError = '';
+    serviceDetailsError = '';
     try {
-      const [details, logs] = await Promise.all([
-        getService(name),
-        getServiceLogs(name),
-      ]);
+      const details = await getService(name);
       serviceDetails = details;
-      serviceLogs = logs.items;
       serviceDetailsByName = {
         ...serviceDetailsByName,
         [name]: details,
       };
     } catch (err) {
-      serviceError = err instanceof Error ? err.message : String(err);
+      serviceDetailsError = err instanceof Error ? err.message : String(err);
       serviceDetails = null;
-      serviceLogs = [];
     } finally {
       serviceDetailsLoading = false;
+    }
+  }
+
+  async function loadServiceLogs(
+    name: string,
+    lines: (typeof serviceLogLineOptions)[number] = serviceLogLines,
+  ) {
+    serviceLogsLoading = true;
+    serviceLogsError = '';
+    serviceLogsCopyFeedback = '';
+    try {
+      const logs = await getServiceLogs(name, lines);
+      serviceLogs = logs.items;
+    } catch (err) {
+      serviceLogsError = err instanceof Error ? err.message : String(err);
+      serviceLogs = [];
+    } finally {
       serviceLogsLoading = false;
+    }
+  }
+
+  async function loadSelectedService(name: string) {
+    try {
+      await Promise.all([loadServiceDetails(name), loadServiceLogs(name)]);
+    } finally {
+      serviceLogSearch = '';
     }
   }
 
@@ -238,7 +266,9 @@
         await loadSelectedService(selectedServiceName);
       } else {
         serviceDetails = null;
+        serviceDetailsError = '';
         serviceLogs = [];
+        serviceLogsError = '';
       }
       const hydrationToken = ++serviceHydrationToken;
       void (async () => {
@@ -263,13 +293,16 @@
       services = [];
       selectedServiceName = null;
       serviceDetails = null;
+      serviceDetailsError = '';
       serviceLogs = [];
+      serviceLogsError = '';
     } finally {
       servicesLoading = false;
     }
   }
 
   async function selectPage(next: Page) {
+    if (next === 'logs') return;
     page = next;
     if (next === 'services') {
       await loadServices();
@@ -279,6 +312,33 @@
   async function selectService(name: string) {
     selectedServiceName = name;
     await loadSelectedService(name);
+  }
+
+  async function refreshSelectedServiceLogs() {
+    if (!selectedServiceName) return;
+    await loadServiceLogs(selectedServiceName);
+  }
+
+  async function updateServiceLogLines(lines: (typeof serviceLogLineOptions)[number]) {
+    serviceLogLines = lines;
+    await refreshSelectedServiceLogs();
+  }
+
+  async function handleServiceLogLineChange(event: Event) {
+    await updateServiceLogLines(
+      Number((event.currentTarget as HTMLSelectElement).value) as
+        (typeof serviceLogLineOptions)[number],
+    );
+  }
+
+  async function copyVisibleServiceLogs() {
+    try {
+      await navigator.clipboard.writeText(visibleServiceLogs.join('\n'));
+      serviceLogsCopyFeedback = 'Copied';
+    } catch (err) {
+      serviceLogsCopyFeedback =
+        err instanceof Error ? err.message : 'Clipboard unavailable';
+    }
   }
 
   function getServiceActionWarning(
@@ -504,11 +564,15 @@
     serviceDetails = null;
     serviceLogs = [];
     servicesError = '';
-    serviceError = '';
+    serviceDetailsError = '';
+    serviceLogsError = '';
     serviceActionError = '';
     serviceActionDialog = null;
     serviceSearch = '';
     serviceFilter = 'all';
+    serviceLogSearch = '';
+    serviceLogsAutoRefresh = false;
+    serviceLogsCopyFeedback = '';
     serviceDetailsByName = {};
     await syncAuthState();
   }
@@ -536,6 +600,12 @@
   );
   $: activeService =
     services.find((service) => service.name === selectedServiceName) ?? null;
+  $: serviceLogSearchQuery = serviceLogSearch.trim().toLowerCase();
+  $: visibleServiceLogs = serviceLogSearchQuery
+    ? serviceLogs.filter((line) =>
+        line.toLowerCase().includes(serviceLogSearchQuery),
+      )
+    : serviceLogs;
   $: visibleServices = services
     .filter((service) => {
       const query = serviceSearch.trim().toLowerCase();
@@ -567,6 +637,24 @@
       : serviceDetails;
   $: pageTitle =
     pages.find((item) => item.value === page)?.label ?? 'HomePanel';
+  $: {
+    if (serviceLogsAutoRefreshTimer) {
+      clearInterval(serviceLogsAutoRefreshTimer);
+      serviceLogsAutoRefreshTimer = null;
+    }
+    if (serviceLogsAutoRefresh && page === 'services' && selectedServiceName) {
+      serviceLogsAutoRefreshTimer = setInterval(() => {
+        void refreshSelectedServiceLogs();
+      }, 3_000);
+    }
+  }
+
+  onDestroy(() => {
+    if (serviceLogsAutoRefreshTimer) {
+      clearInterval(serviceLogsAutoRefreshTimer);
+      serviceLogsAutoRefreshTimer = null;
+    }
+  });
 </script>
 
 {#if loading}
@@ -635,10 +723,11 @@
           <button
             type="button"
             class:active={page === item.value}
+            disabled={item.value === 'logs'}
             on:click={() => selectPage(item.value)}
           >
             <span>{item.label}</span>
-            {#if item.state === 'soon'}
+            {#if item.state === 'soon' || item.value === 'logs'}
               <small>soon</small>
             {:else if item.value === 'terminals'}
               <small>{visibleTerminals.length}</small>
@@ -1028,8 +1117,8 @@
                 <div class="notice error">{serviceActionError}</div>
               {/if}
 
-              {#if serviceError}
-                <div class="notice error">{serviceError}</div>
+              {#if serviceDetailsError}
+                <div class="notice error">{serviceDetailsError}</div>
               {/if}
 
               {#if serviceDetailsLoading}
@@ -1069,17 +1158,92 @@
                 <div class="panel-head compact-head">
                   <div>
                     <h3>Recent logs</h3>
-                    <p>Last 200 journal lines for this unit</p>
+                    <p>Journal lines for this unit</p>
                   </div>
                   {#if serviceLogsLoading}
                     <span class="mini-status">Loading...</span>
                   {/if}
                 </div>
+
+                <div class="service-logs-toolbar" data-testid="service-logs-toolbar">
+                  <button
+                    type="button"
+                    data-testid="service-logs-refresh"
+                    on:click={refreshSelectedServiceLogs}
+                    disabled={!selectedServiceName || serviceLogsLoading}
+                  >
+                    Refresh logs
+                  </button>
+
+                  <label class="service-logs-field" for="service-log-lines">
+                    <span>Lines</span>
+                    <select
+                      id="service-log-lines"
+                      data-testid="service-logs-lines"
+                      bind:value={serviceLogLines}
+                      disabled={!selectedServiceName || serviceLogsLoading}
+                      on:change={handleServiceLogLineChange}
+                    >
+                      {#each serviceLogLineOptions as option (option)}
+                        <option value={option}>{option}</option>
+                      {/each}
+                    </select>
+                  </label>
+
+                  <label class="service-logs-field service-logs-search" for="service-log-search">
+                    <span class="sr-only">Filter logs</span>
+                    <input
+                      id="service-log-search"
+                      data-testid="service-logs-search"
+                      type="search"
+                      placeholder="Filter visible lines"
+                      bind:value={serviceLogSearch}
+                    />
+                  </label>
+
+                  <label class="service-logs-toggle">
+                    <input
+                      type="checkbox"
+                      data-testid="service-logs-autorefresh"
+                      bind:checked={serviceLogsAutoRefresh}
+                      disabled={!selectedServiceName}
+                    />
+                    <span>Auto-refresh</span>
+                  </label>
+
+                  <button
+                    type="button"
+                    data-testid="service-logs-copy"
+                    on:click={copyVisibleServiceLogs}
+                    disabled={!selectedServiceName}
+                  >
+                    Copy visible logs
+                  </button>
+                </div>
+
+                <div class="service-logs-meta">
+                  <span data-testid="service-logs-summary">
+                    Showing {visibleServiceLogs.length} of {serviceLogs.length} lines
+                  </span>
+                  {#if serviceLogsAutoRefresh}
+                    <span>Refreshing every 3s</span>
+                  {/if}
+                  {#if serviceLogsCopyFeedback}
+                    <span>{serviceLogsCopyFeedback}</span>
+                  {/if}
+                </div>
+
+                {#if serviceLogsError}
+                  <div class="notice error">{serviceLogsError}</div>
+                {/if}
+
                 <pre data-testid="service-logs" class="service-logs">
 {#if serviceLogs.length === 0}
 No recent log lines.
+{:else if visibleServiceLogs.length === 0}
+No visible log lines match the current filter.
 {:else}
-{serviceLogs.join('\n')}
+{visibleServiceLogs.join('\n')}
 {/if}</pre>
               </section>
             {:else}

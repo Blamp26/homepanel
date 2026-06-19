@@ -1,14 +1,17 @@
 use axum::{
-    extract::Path,
+    extract::{Path, Query},
     http::StatusCode,
     response::IntoResponse,
     Json,
 };
 use homepanel_core::error::{ApiError, ApiErrorResponse};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, process::Stdio};
 use tokio::process::Command;
 use tracing::debug;
+
+const DEFAULT_LOG_LINES: usize = 200;
+const MAX_LOG_LINES: usize = 1000;
 
 #[derive(Debug, Serialize)]
 pub struct ServiceSummary {
@@ -41,6 +44,11 @@ pub struct ServiceDetails {
 #[derive(Debug, Serialize)]
 pub struct ServiceLogsResponse {
     pub items: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ServiceLogsQuery {
+    pub lines: Option<usize>,
 }
 
 fn error_response(status: StatusCode, error: ApiError) -> impl IntoResponse {
@@ -151,6 +159,10 @@ async fn service_output(program: &str, args: &[&str]) -> Result<String, ApiError
     run_command(program, args).await
 }
 
+fn normalize_log_lines(requested: Option<usize>) -> usize {
+    requested.unwrap_or(DEFAULT_LOG_LINES).clamp(1, MAX_LOG_LINES)
+}
+
 pub async fn list() -> impl IntoResponse {
     match service_output(
         "systemctl",
@@ -220,15 +232,27 @@ pub async fn restart(Path(name): Path<String>) -> impl IntoResponse {
     service_action(name, "restart").await
 }
 
-pub async fn logs(Path(name): Path<String>) -> impl IntoResponse {
+pub async fn logs(
+    Path(name): Path<String>,
+    Query(query): Query<ServiceLogsQuery>,
+) -> impl IntoResponse {
     if let Err(err) = validate_service_name(&name) {
         return error_response(StatusCode::BAD_REQUEST, err).into_response();
     }
 
+    let lines = normalize_log_lines(query.lines);
+    let lines_arg = lines.to_string();
     debug!(service = %name, "reading service logs");
     match service_output(
         "journalctl",
-        &["-u", &name, "-n", "200", "--no-pager", "--output=short-iso"],
+        &[
+            "-u",
+            &name,
+            "-n",
+            lines_arg.as_str(),
+            "--no-pager",
+            "--output=short-iso",
+        ],
     )
     .await
     {
@@ -285,5 +309,13 @@ mod tests {
         assert_eq!(service.main_pid, 1234);
         assert_eq!(service.memory_current, Some(54321));
         assert_eq!(service.cpu_usage_nsec, Some(98765));
+    }
+
+    #[test]
+    fn normalizes_log_line_requests() {
+        assert_eq!(normalize_log_lines(None), DEFAULT_LOG_LINES);
+        assert_eq!(normalize_log_lines(Some(0)), 1);
+        assert_eq!(normalize_log_lines(Some(500)), 500);
+        assert_eq!(normalize_log_lines(Some(5_000)), MAX_LOG_LINES);
     }
 }

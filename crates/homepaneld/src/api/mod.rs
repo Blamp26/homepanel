@@ -1,7 +1,6 @@
 pub mod auth;
-pub mod overview;
 pub mod files;
-pub mod logs;
+pub mod overview;
 pub mod settings;
 pub mod services;
 pub mod system;
@@ -46,8 +45,5 @@ pub fn router() -> Router<AppState> {
         .route("/api/services/:name/stop", post(services::stop))
         .route("/api/services/:name/restart", post(services::restart))
         .route("/api/services/:name/logs", get(services::logs))
-        .route("/api/logs/sources", get(logs::sources))
-        .route("/api/logs/read", get(logs::read))
-        .route("/api/logs/follow/ws", get(logs::follow_ws))
         .route("/api/settings", get(settings::get).patch(settings::update))
 }

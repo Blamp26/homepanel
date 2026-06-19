@@ -80,6 +80,11 @@ type OverviewFixture = {
   version?: string;
 };
 
+type OverviewSequenceEntry = OverviewFixture & {
+  delayMs?: number;
+  fail?: boolean;
+};
+
 type FilesFixtureOptions = {
   roots?: string[];
   visibleRoots?: string[];
@@ -330,7 +335,7 @@ async function mockAuthenticatedShell(
     services?: ServiceFixture[];
     files?: FilesFixtureOptions;
     overview?: OverviewFixture;
-    overviewSequence?: OverviewFixture[];
+    overviewSequence?: OverviewSequenceEntry[];
     overviewFailure?: boolean;
   },
 ) {
@@ -347,6 +352,7 @@ async function mockAuthenticatedShell(
   let state = terminals.slice();
   const serviceState = options?.services ?? [];
   const serviceActions: string[] = [];
+  const serviceLogRequests: Array<{ name: string; lines: number }> = [];
   const fileRoots = options?.files?.roots ?? ['/home', '/srv', '/DATA'];
   const visibleRoots =
     options?.files?.visibleRoots ?? fileRoots.filter((root) => root !== '/DATA');
@@ -455,10 +461,7 @@ async function mockAuthenticatedShell(
   const overviewStates = (options?.overviewSequence?.length
     ? options.overviewSequence
     : [options?.overview ?? {}]
-  ).map((overrides) => ({
-    ...overviewState,
-    ...overrides,
-  }));
+  ).map((overrides) => ({ ...overviewState, ...overrides }));
   let overviewRequestCount = 0;
 
   await page.route('/api/auth/status', async (route) => {
@@ -544,9 +547,15 @@ async function mockAuthenticatedShell(
     if (method === 'GET' && url.pathname.startsWith('/api/services/')) {
       if (url.pathname.endsWith('/logs')) {
         const service = serviceState.find(({ name }) => name === serviceName);
+        const lines = Number(url.searchParams.get('lines') ?? '200');
+        serviceLogRequests.push({ name: serviceName, lines });
         await route.fulfill({
           contentType: 'application/json',
-          body: JSON.stringify({ items: service?.logs ?? [] }),
+          body: JSON.stringify({
+            items: (service?.logs ?? []).slice(
+              Math.max(0, (service?.logs ?? []).length - lines),
+            ),
+          }),
         });
         return;
       }
@@ -595,6 +604,19 @@ async function mockAuthenticatedShell(
     const nextOverview =
       overviewStates[Math.min(overviewRequestCount, overviewStates.length - 1)] ?? overviewState;
     overviewRequestCount += 1;
+    if (nextOverview.delayMs) {
+      await new Promise((resolve) => setTimeout(resolve, nextOverview.delayMs));
+    }
+    if (nextOverview.fail) {
+      await route.fulfill({
+        status: 503,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          error: { code: 'bad_request', message: 'overview unavailable' },
+        }),
+      });
+      return;
+    }
     await route.fulfill({
       contentType: 'application/json',
       body: JSON.stringify(nextOverview),
@@ -824,6 +846,7 @@ async function mockAuthenticatedShell(
 
   return {
     getServiceActions: () => serviceActions.slice(),
+    getServiceLogRequests: () => serviceLogRequests.slice(),
   };
 }
 
@@ -1106,6 +1129,7 @@ test('services page opens and manages systemd units', async ({
   });
 
   await page.getByRole('button', { name: 'Services', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Logs soon' })).toBeDisabled();
 
   await expect(
     page
@@ -1181,6 +1205,35 @@ test('services page opens and manages systemd units', async ({
     'homepanel.service',
   );
   await expect(page.getByTestId('service-logs')).toContainText('booted');
+  await expect(page.getByTestId('service-logs-toolbar')).toBeVisible();
+  await expect(page.getByTestId('service-logs-refresh')).toBeVisible();
+  await expect(page.getByTestId('service-logs-lines')).toHaveValue('200');
+  await expect(page.getByTestId('service-logs-search')).toBeVisible();
+  await expect(page.getByTestId('service-logs-copy')).toBeVisible();
+
+  const initialLogRequestCount = shell.getServiceLogRequests().length;
+  await page.getByTestId('service-logs-refresh').click();
+  await expect
+    .poll(() => shell.getServiceLogRequests().length)
+    .toBeGreaterThan(initialLogRequestCount);
+
+  await page.getByTestId('service-logs-search').fill('ready');
+  await expect(page.getByTestId('service-logs')).toContainText('ready');
+  await expect(page.getByTestId('service-logs')).not.toContainText('booted');
+  await page.getByTestId('service-logs-copy').click();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (
+            window as typeof window & {
+              __homepanelClipboardWrites?: string[];
+            }
+          ).__homepanelClipboardWrites ?? [],
+      ),
+    )
+    .toContain('2026-06-17 10:01:00 ready');
+  await page.getByTestId('service-logs-search').fill('');
 
   await page.getByRole('button', { name: 'Restart' }).click();
   await expect(page.getByTestId('service-action-warning')).toContainText(
@@ -1306,6 +1359,10 @@ test('overview opens as a real dashboard', async ({ page, request }) => {
         cpu_usage_percent: 0.33,
       },
       {
+        fail: true,
+        delayMs: 1_200,
+      },
+      {
         cpu_usage_percent: 23,
       },
     ],
@@ -1351,11 +1408,25 @@ test('overview opens as a real dashboard', async ({ page, request }) => {
   await expect(page.getByTestId('dashboard-storage')).not.toContainText(
     '/var/lib/homepanel',
   );
+  const dashboardStatus = page
+    .getByTestId('dashboard-page')
+    .locator('.dashboard-header-meta .dashboard-pill')
+    .first();
+  await page.waitForTimeout(2_200);
+  await expect(dashboardStatus).toHaveText('Online');
+  await expect(page.getByTestId('dashboard-summary')).toContainText('CPU 0.3%');
+  await page.waitForTimeout(1_500);
+  await expect(page.getByTestId('dashboard-error')).toContainText(
+    'Showing cached data',
+  );
+  await expect(page.getByTestId('dashboard-summary')).toContainText('CPU 0.3%');
+  await page.waitForTimeout(1_300);
   await expect(page.getByTestId('dashboard-summary')).toContainText('CPU 23%');
   await expect(page.getByTestId('dashboard-metric-load').locator('strong')).toHaveText(
     '23%',
   );
   await expect(page.getByTestId('dashboard-summary')).not.toContainText('Load');
+  await expect(dashboardStatus).toHaveText('Online');
 
   await page.getByRole('button', { name: 'Overview', exact: true }).click();
   await expect(page.getByTestId('dashboard-page')).toBeVisible();
@@ -1380,7 +1451,174 @@ test('overview opens as a real dashboard', async ({ page, request }) => {
   await expect(page.getByRole('heading', { name: 'Overview', exact: true })).toBeVisible();
 
   await page.getByTestId('dashboard-action-logs').click();
-  await expect(page.getByRole('heading', { name: 'Logs' })).toBeVisible();
+  await expect(
+    page
+      .getByLabel('Systemd services')
+      .getByRole('heading', { name: 'Services' }),
+  ).toBeVisible();
+});
+
+test('services log line selector requests more lines', async ({
+  page,
+  request,
+}) => {
+  await requireBackend(request);
+  const shell = await mockAuthenticatedShell(page, [], {
+    services: [
+      {
+        name: 'homepanel.service',
+        load: 'loaded',
+        active: 'active',
+        sub: 'running',
+        description: 'HomePanel daemon',
+        unit_file_state: 'enabled',
+        details: {
+          name: 'homepanel.service',
+          load_state: 'loaded',
+          active_state: 'active',
+          sub_state: 'running',
+          unit_file_state: 'enabled',
+          description: 'HomePanel daemon',
+          fragment_path: '/usr/lib/systemd/system/homepanel.service',
+          main_pid: 1234,
+          memory_current: 1048576,
+          cpu_usage_nsec: 2048,
+        },
+        logs: Array.from(
+          { length: 250 },
+          (_, index) => `line ${String(index + 1).padStart(3, '0')}`,
+        ),
+      },
+    ],
+  });
+
+  await page.getByRole('button', { name: 'Services', exact: true }).click();
+  await expect(page.getByTestId('service-logs')).not.toContainText('line 001');
+  await page.getByTestId('service-logs-lines').selectOption('500');
+  await expect
+    .poll(() => shell.getServiceLogRequests().at(-1)?.lines)
+    .toBe(500);
+  await expect(page.getByTestId('service-logs')).toContainText('line 001');
+});
+
+test('dashboard keeps online status during a single failed refresh', async ({
+  page,
+  request,
+}) => {
+  await requireBackend(request);
+  await mockAuthenticatedShell(page, [], {
+    overview: {
+      hostname: 'orchard',
+      uptime_seconds: 3_665,
+      load_average: [0.42, 0.31, 0.25],
+      cpu_usage_percent: 0.33,
+      memory_total_bytes: 8 * 1024 ** 3,
+      memory_available_bytes: 5 * 1024 ** 3,
+      memory_used_bytes: 3 * 1024 ** 3,
+      disks: [
+        {
+          mount_point: '/',
+          total_bytes: 100 * 1024 ** 3,
+          used_bytes: 40 * 1024 ** 3,
+          available_bytes: 60 * 1024 ** 3,
+        },
+      ],
+      primary_ips: ['192.168.1.20'],
+      terminal_count: 0,
+      service_summary: {
+        total: 1,
+        running: 1,
+        failed: 0,
+      },
+      storage_path: '/var/lib/homepanel',
+      database_path: '/var/lib/homepanel/homepanel.db',
+      version: '0.1.0',
+    },
+    overviewSequence: [
+      {},
+      {
+        fail: true,
+        delayMs: 1_200,
+      },
+      {
+        cpu_usage_percent: 0.41,
+      },
+    ],
+  });
+
+  await page.getByRole('button', { name: 'Overview', exact: true }).click();
+  const dashboardStatus = page
+    .getByTestId('dashboard-page')
+    .locator('.dashboard-header-meta .dashboard-pill')
+    .first();
+
+  await expect(dashboardStatus).toHaveText('Online');
+  await page.waitForTimeout(2_200);
+  await expect(dashboardStatus).toHaveText('Online');
+  await expect(page.getByTestId('dashboard-summary')).toContainText('CPU 0.3%');
+  await page.waitForTimeout(1_500);
+  await expect(page.getByTestId('dashboard-error')).toContainText(
+    'Showing cached data',
+  );
+  await expect(page.getByTestId('dashboard-summary')).toContainText('CPU 0.3%');
+  await page.waitForTimeout(1_500);
+  await expect(page.getByTestId('dashboard-summary')).toContainText('CPU 0.4%');
+  await expect(dashboardStatus).toHaveText('Online');
+});
+
+test('dashboard can mark repeated overview failures offline', async ({
+  page,
+  request,
+}) => {
+  await requireBackend(request);
+  await mockAuthenticatedShell(page, [], {
+    overview: {
+      hostname: 'orchard',
+      uptime_seconds: 3_665,
+      load_average: [0.42, 0.31, 0.25],
+      cpu_usage_percent: 0.33,
+      memory_total_bytes: 8 * 1024 ** 3,
+      memory_available_bytes: 5 * 1024 ** 3,
+      memory_used_bytes: 3 * 1024 ** 3,
+      disks: [
+        {
+          mount_point: '/',
+          total_bytes: 100 * 1024 ** 3,
+          used_bytes: 40 * 1024 ** 3,
+          available_bytes: 60 * 1024 ** 3,
+        },
+      ],
+      primary_ips: ['192.168.1.20'],
+      terminal_count: 0,
+      service_summary: {
+        total: 1,
+        running: 1,
+        failed: 0,
+      },
+      storage_path: '/var/lib/homepanel',
+      database_path: '/var/lib/homepanel/homepanel.db',
+      version: '0.1.0',
+    },
+    overviewSequence: [
+      {},
+      { fail: true },
+      { fail: true },
+    ],
+  });
+
+  await page.getByRole('button', { name: 'Overview', exact: true }).click();
+  const dashboardStatus = page
+    .getByTestId('dashboard-page')
+    .locator('.dashboard-header-meta .dashboard-pill')
+    .first();
+
+  await expect(dashboardStatus).toHaveText('Online');
+  await page.waitForTimeout(4_500);
+  await expect(dashboardStatus).toHaveText('Offline');
+  await expect(page.getByTestId('dashboard-error')).toContainText(
+    'overview unavailable',
+  );
+  await expect(page.getByTestId('dashboard-summary')).toContainText('CPU 0.3%');
 });
 
 test('overview shows an error state when the api fails', async ({

@@ -153,6 +153,13 @@ button:disabled {
   color: #ffffff;
 }
 
+.primary-nav button:disabled:hover,
+.primary-nav button:disabled.active {
+  background: transparent;
+  border-color: transparent;
+  color: #d8dee5;
+}
+
 .primary-nav small {
   color: var(--rail-muted);
   font-size: 0.72rem;
@@ -691,6 +698,44 @@ button:disabled {
   gap: 10px;
 }
 
+.service-logs-toolbar {
+  display: grid;
+  grid-template-columns: auto auto minmax(180px, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.service-logs-field,
+.service-logs-toggle {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.service-logs-field select,
+.service-logs-field input {
+  min-height: 34px;
+}
+
+.service-logs-search input {
+  width: 100%;
+}
+
+.service-logs-toggle {
+  white-space: nowrap;
+}
+
+.service-logs-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
 .service-logs {
   min-height: 0;
   margin: 0;
@@ -705,6 +750,30 @@ button:disabled {
   line-height: 1.45;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+@media (max-width: 980px) {
+  .service-details-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .service-logs-toolbar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .service-logs-search {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 640px) {
+  .service-details-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .service-logs-toolbar {
+    grid-template-columns: 1fr;
+  }
 }
 
 .panel-placeholder {

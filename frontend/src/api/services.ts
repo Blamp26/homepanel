@@ -50,6 +50,8 @@ export async function restartService(name: string) {
   return apiPost(`/api/services/${encodeURIComponent(name)}/restart`);
 }
 
-export async function getServiceLogs(name: string) {
-  return apiGet<ServiceLogsResponse>(`/api/services/${encodeURIComponent(name)}/logs`);
+export async function getServiceLogs(name: string, lines = 200) {
+  return apiGet<ServiceLogsResponse>(
+    `/api/services/${encodeURIComponent(name)}/logs?lines=${lines}`,
+  );
 }
