@@ -63,10 +63,10 @@ type ServerFixture = {
   log_type?: 'file' | 'journal' | null;
   log_path?: string | null;
   log_unit?: string | null;
-  status_type?: 'manual' | 'process' | 'systemd' | 'tcp' | 'http' | null;
+  status_type?: 'manual' | 'process' | 'systemd' | 'script' | 'tcp' | 'http' | null;
   status_value?: string | null;
   status: {
-    state: 'running' | 'stopped' | 'unknown';
+    state: 'running' | 'stopped' | 'unknown' | 'error';
     detail?: string | null;
   };
   created_at?: string;
@@ -800,6 +800,19 @@ async function mockAuthenticatedShell(
           }),
         });
         return;
+      }
+      if (response.ok) {
+        const nextStatus =
+          action === 'start'
+            ? { state: 'running' as const, detail: 'active' }
+            : action === 'stop'
+              ? { state: 'stopped' as const, detail: 'inactive' }
+              : { state: 'running' as const, detail: 'restarted' };
+        const updated = {
+          ...server,
+          status: nextStatus,
+        };
+        serverState = serverState.map((item) => (item.id === server.id ? updated : item));
       }
       await route.fulfill({
         contentType: 'application/json',
@@ -1732,7 +1745,8 @@ test('servers page can create a server card with only name', async ({
   await expect(header.getByRole('button', { name: 'Delete' })).toHaveCount(1);
   await expect(header.getByRole('button', { name: 'Configure actions' })).toHaveCount(0);
   await expect(header.getByRole('button', { name: 'Configure logs' })).toHaveCount(0);
-  await expect(header.getByRole('button', { name: 'Configure status' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Configure status' })).toHaveCount(1);
+  await expect(page.getByTestId('server-status-summary')).toContainText('No status configured');
   await expect(page.getByTestId('server-actions-empty')).toContainText('No actions configured');
   await expect(page.getByTestId('server-logs-empty')).toContainText('No logs configured');
   await expect(page.getByTestId('server-action-output')).toHaveCount(0);
@@ -1773,6 +1787,40 @@ test('servers page disables start until actions are configured', async ({
   await expect(page.getByRole('button', { name: 'Stop' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Restart' })).toHaveCount(0);
   await expect(page.getByTestId('server-logs-empty')).toContainText('No logs configured');
+});
+
+test('servers page shows scripted status and refreshes after actions', async ({
+  page,
+  request,
+}) => {
+  await requireBackend(request);
+  await mockAuthenticatedShell(page, [], {
+    servers: [
+      {
+        id: 'squad',
+        name: 'Squad',
+        description: 'Dedicated server',
+        start_script: '/home/superadmin/squad-start.sh',
+        stop_script: '/home/superadmin/squad-stop.sh',
+        status_type: 'script',
+        status_value: '/home/superadmin/homepanel-squad-status.sh',
+        status: { state: 'stopped', detail: 'no matching Squad process or ports detected' },
+      },
+    ],
+  });
+
+  await page.getByRole('button', { name: 'Servers', exact: true }).click();
+  await expect(page.getByTestId('server-status-summary')).toContainText(
+    '/home/superadmin/homepanel-squad-status.sh',
+  );
+  await expect(page.getByRole('button', { name: 'Edit status' })).toHaveCount(1);
+  await expect(page.getByTestId('server-detail-panel')).toContainText('STOPPED');
+
+  await page.getByTestId('server-action-start').click();
+  await expect(page.getByTestId('server-detail-panel')).toContainText('RUNNING');
+
+  await page.getByTestId('server-action-stop').click();
+  await expect(page.getByTestId('server-detail-panel')).toContainText('STOPPED');
 });
 
 test('servers page configure actions modal can save script paths', async ({

@@ -1,7 +1,7 @@
 import { apiDelete, apiGet, apiPatch, apiPost } from './client';
 
 export type ServerStatus = {
-  state: 'running' | 'stopped' | 'unknown';
+  state: 'running' | 'stopped' | 'unknown' | 'error';
   detail?: string | null;
 };
 
@@ -16,7 +16,7 @@ export type ServerRecord = {
   log_type?: 'file' | 'journal' | null;
   log_path?: string | null;
   log_unit?: string | null;
-  status_type?: 'manual' | 'process' | 'systemd' | 'tcp' | 'http' | null;
+  status_type?: 'manual' | 'process' | 'systemd' | 'script' | 'tcp' | 'http' | null;
   status_value?: string | null;
   status: ServerStatus;
   created_at: string;
@@ -53,7 +53,7 @@ export type ServerUpdatePayload = {
   log_type?: 'file' | 'journal' | null;
   log_path?: string | null;
   log_unit?: string | null;
-  status_type?: 'manual' | 'process' | 'systemd' | 'tcp' | 'http' | null;
+  status_type?: 'manual' | 'process' | 'systemd' | 'script' | 'tcp' | 'http' | null;
   status_value?: string | null;
 };
 

@@ -21,6 +21,7 @@
     { value: 'manual', label: 'Manual / unknown' },
     { value: 'systemd', label: 'systemd unit' },
     { value: 'process', label: 'Process name' },
+    { value: 'script', label: 'Status script' },
   ] as const;
 
   type MetadataFormState = { name: string; description: string };
@@ -36,7 +37,7 @@
     log_unit: string;
   };
   type StatusFormState = {
-    status_type: 'manual' | 'systemd' | 'process';
+    status_type: 'manual' | 'systemd' | 'process' | 'script';
     status_value: string;
   };
   type PathPickerTarget =
@@ -44,7 +45,8 @@
     | { field: 'start_script'; mode: 'file' }
     | { field: 'stop_script'; mode: 'file' }
     | { field: 'restart_script'; mode: 'file' }
-    | { field: 'log_path'; mode: 'file' };
+    | { field: 'log_path'; mode: 'file' }
+    | { field: 'status_value'; mode: 'file' };
 
   let loading = false;
   let error = '';
@@ -187,7 +189,7 @@
   function statusFormFromServer(server: ServerRecord): StatusFormState {
     return {
       status_type:
-        server.status_type === 'process' || server.status_type === 'systemd'
+        server.status_type === 'process' || server.status_type === 'systemd' || server.status_type === 'script'
           ? server.status_type
           : 'manual',
       status_value: server.status_value ?? '',
@@ -214,15 +216,20 @@
     return Boolean(server?.status_type && server.status_type !== 'manual');
   }
 
-  function statusTone(state: ServerRecord['status']['state']) {
-    switch (state) {
-      case 'running':
-        return 'good';
-      case 'stopped':
-        return 'muted';
-      default:
-        return 'neutral';
+  function statusSummary(server: ServerRecord | null) {
+    if (!server?.status_type || server.status_type === 'manual') {
+      return 'No status configured';
     }
+    if (server.status_type === 'script') {
+      return `Status script: ${server.status_value ?? 'not set'}`;
+    }
+    if (server.status_type === 'systemd') {
+      return `systemd unit: ${server.status_value ?? 'not set'}`;
+    }
+    if (server.status_type === 'process') {
+      return `process name: ${server.status_value ?? 'not set'}`;
+    }
+    return 'Status configured';
   }
 
   function statusLabel(state: ServerRecord['status']['state']) {
@@ -231,8 +238,23 @@
         return 'RUNNING';
       case 'stopped':
         return 'STOPPED';
+      case 'error':
+        return 'ERROR';
       default:
         return 'UNKNOWN';
+    }
+  }
+
+  function statusTone(state: ServerRecord['status']['state']) {
+    switch (state) {
+      case 'running':
+        return 'good';
+      case 'stopped':
+        return 'muted';
+      case 'error':
+        return 'bad';
+      default:
+        return 'neutral';
     }
   }
 
@@ -565,6 +587,8 @@
       actionsState = { ...actionsState, restart_script: value };
     } else if (pathPicker.field === 'log_path') {
       logsConfigState = { ...logsConfigState, log_path: value };
+    } else if (pathPicker.field === 'status_value') {
+      statusConfigState = { ...statusConfigState, status_value: value };
     }
     pathPicker = null;
   }
@@ -721,6 +745,14 @@
             </span>
           </div>
           <p>{selectedServer.description ?? 'No description provided.'}</p>
+          <div class="server-status-inline">
+            <span class="server-status-summary" data-testid="server-status-summary">
+              {statusSummary(selectedServer)}
+            </span>
+            <button type="button" class="compact-button" on:click={openStatusConfigForm}>
+              {hasStatusConfigured(selectedServer) ? 'Edit status' : 'Configure status'}
+            </button>
+          </div>
         </div>
         <div class="server-context-actions">
           <button type="button" on:click={openEditForm}>Edit details</button>
@@ -926,34 +958,6 @@ No visible log lines match the current filter.
         {/if}
       </section>
 
-      {#if hasStatusConfigured(selectedServer)}
-        <section class="server-section">
-          <div class="panel-head compact-head">
-            <div>
-              <h3>Status</h3>
-              <p>Configured status checks and the current state.</p>
-            </div>
-            <button type="button" on:click={openStatusConfigForm}>Configure status</button>
-          </div>
-
-          <div class="output-summary">
-            <div>
-              <span>Type</span>
-              <strong>{selectedServer.status_type ?? 'manual'}</strong>
-            </div>
-            <div>
-              <span>Configured value</span>
-              <strong>{selectedServer.status_value ?? 'None'}</strong>
-            </div>
-            <div>
-              <span>Current</span>
-              <strong>{statusLabel(selectedServer.status.state)}</strong>
-            </div>
-          </div>
-
-          <div class="panel-placeholder">{selectedServer.status.detail ?? 'Manual / unknown'}</div>
-        </section>
-      {/if}
     {:else}
       <div class="servers-empty detail-empty">
         <p class="eyebrow">Servers</p>
@@ -1155,7 +1159,17 @@ No visible log lines match the current filter.
             {/each}
           </select>
         </label>
-        {#if statusConfigState.status_type !== 'manual'}
+        {#if statusConfigState.status_type === 'script'}
+          <label class="full">
+            <span>Status script path</span>
+            <div class="picker-field">
+              <input data-testid="server-status-value" bind:value={statusConfigState.status_value} />
+              <button type="button" data-testid="server-status-browse" on:click={() => openPathPicker('status_value', 'file')}>
+                Browse
+              </button>
+            </div>
+          </label>
+        {:else if statusConfigState.status_type !== 'manual'}
           <label class="full">
             <span>Status value</span>
             <input
@@ -1181,24 +1195,36 @@ No visible log lines match the current filter.
   {/if}
 
   {#if pathPicker}
-    <PathPickerDialog
-      open={true}
-      title={pathPicker.field === 'working_dir' ? 'Choose working directory' : 'Choose script path'}
-      description={pathPicker.field === 'working_dir'
-        ? 'Browse a directory and choose the folder HomePanel should use.'
-        : 'Browse to an executable script file.'}
+      <PathPickerDialog
+        open={true}
+      title={
+        pathPicker.field === 'working_dir'
+          ? 'Choose working directory'
+          : pathPicker.field === 'status_value'
+            ? 'Choose status script'
+            : 'Choose script path'
+      }
+      description={
+        pathPicker.field === 'working_dir'
+          ? 'Browse a directory and choose the folder HomePanel should use.'
+          : pathPicker.field === 'status_value'
+            ? 'Browse to the status helper script file.'
+            : 'Browse to an executable script file.'
+      }
       mode={pathPicker.mode}
       confirmLabel={pathPicker.mode === 'directory' ? 'Use folder' : 'Use file'}
       initialPath={
-        pathPicker.field === 'working_dir'
-          ? actionsState.working_dir
-          : pathPicker.field === 'start_script'
-            ? actionsState.start_script
-            : pathPicker.field === 'stop_script'
-              ? actionsState.stop_script
-              : pathPicker.field === 'restart_script'
-                ? actionsState.restart_script
-                : logsConfigState.log_path
+          pathPicker.field === 'working_dir'
+            ? actionsState.working_dir
+            : pathPicker.field === 'start_script'
+              ? actionsState.start_script
+              : pathPicker.field === 'stop_script'
+                ? actionsState.stop_script
+                : pathPicker.field === 'restart_script'
+                  ? actionsState.restart_script
+                : pathPicker.field === 'log_path'
+                  ? logsConfigState.log_path
+                  : statusConfigState.status_value
       }
       onSelect={applyPickedPath}
       onClose={closePathPicker}
@@ -1349,6 +1375,12 @@ No visible log lines match the current filter.
     margin-top: 2px;
   }
 
+  .compact-button {
+    min-height: 30px;
+    padding: 0 10px;
+    font-size: 0.78rem;
+  }
+
   .panel-head.compact-head {
     gap: 10px;
     padding-bottom: 2px;
@@ -1367,18 +1399,18 @@ No visible log lines match the current filter.
   .server-output-panel,
   .server-logs-panel,
   .server-section {
-    padding: 18px;
+    padding: 20px;
   }
 
   .server-section {
     display: grid;
-    gap: 14px;
+    gap: 16px;
   }
 
   .server-context {
     display: flex;
     justify-content: space-between;
-    gap: 14px;
+    gap: 16px;
     align-items: flex-start;
   }
 
@@ -1392,8 +1424,8 @@ No visible log lines match the current filter.
   .server-script-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 10px;
-    margin-top: 8px;
+    gap: 12px;
+    margin-top: 10px;
   }
 
   .server-script-grid article {
@@ -1429,13 +1461,13 @@ No visible log lines match the current filter.
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 10px;
-    margin-top: 10px;
+    margin-top: 12px;
   }
 
   .action-output-inline {
     display: grid;
     gap: 10px;
-    margin-top: 14px;
+    margin-top: 16px;
   }
 
   .output-summary div,
@@ -1452,7 +1484,7 @@ No visible log lines match the current filter.
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 10px;
-    margin-top: 10px;
+    margin-top: 12px;
   }
 
   .output-blocks pre,
@@ -1474,7 +1506,7 @@ No visible log lines match the current filter.
     grid-template-columns: auto auto minmax(180px, 1fr) auto auto;
     gap: 8px;
     align-items: center;
-    margin-top: 12px;
+    margin-top: 14px;
   }
 
   .server-logs-field,
@@ -1495,7 +1527,7 @@ No visible log lines match the current filter.
     display: flex;
     flex-wrap: wrap;
     gap: 10px;
-    margin: 12px 0;
+    margin: 14px 0;
     color: var(--muted);
     font-size: 0.78rem;
   }
@@ -1536,6 +1568,19 @@ No visible log lines match the current filter.
     margin: 4px 0 0;
     color: var(--muted);
     font-size: 0.84rem;
+  }
+
+  .server-status-inline {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    margin-top: 10px;
+  }
+
+  .server-status-summary {
+    color: var(--muted);
+    font-size: 0.82rem;
   }
 
   .dialog-backdrop {

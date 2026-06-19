@@ -149,7 +149,12 @@ fn validate_status_type(value: Option<String>) -> Result<Option<String>, ApiErro
     let value = normalize_optional_text(value);
     match value.as_deref() {
         None => Ok(None),
-        Some("manual") | Some("process") | Some("systemd") | Some("tcp") | Some("http") => {
+        Some("manual")
+        | Some("process")
+        | Some("systemd")
+        | Some("script")
+        | Some("tcp")
+        | Some("http") => {
             Ok(value)
         }
         Some(other) => Err(ApiError::bad_request(format!(
@@ -285,6 +290,88 @@ async fn run_script(
         stdout: String::from_utf8_lossy(&stdout).trim_end().to_string(),
         stderr: String::from_utf8_lossy(&stderr).trim_end().to_string(),
     })
+}
+
+fn first_nonempty_line(text: &str) -> Option<String> {
+    text.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(str::to_string)
+}
+
+fn interpret_script_status(stdout: &str) -> ServerStatusSummary {
+    let lower = stdout.to_lowercase();
+
+    if lower.contains("running") {
+        return ServerStatusSummary {
+            state: "running".to_string(),
+            detail: first_nonempty_line(stdout),
+        };
+    }
+
+    if lower.contains("stopped") {
+        return ServerStatusSummary {
+            state: "stopped".to_string(),
+            detail: first_nonempty_line(stdout),
+        };
+    }
+
+    if lower.contains("=== squad process ===") || lower.contains("=== ports ===") {
+        let has_process = stdout
+            .lines()
+            .any(|line| line.contains("SquadGameServer") || line.contains("SquadGameServer.sh"));
+        let has_ports = stdout.lines().any(|line| {
+            line.contains("7787") || line.contains("27165") || line.contains("15000") || line.contains("21114")
+        });
+        if has_process || has_ports {
+            return ServerStatusSummary {
+                state: "running".to_string(),
+                detail: first_nonempty_line(stdout),
+            };
+        }
+
+        return ServerStatusSummary {
+            state: "stopped".to_string(),
+            detail: Some("no matching Squad process or ports detected".to_string()),
+        };
+    }
+
+    ServerStatusSummary {
+        state: "unknown".to_string(),
+        detail: Some("status script did not report running or stopped".to_string()),
+    }
+}
+
+async fn resolve_script_status(server: &ServerRow) -> ServerStatusSummary {
+    let Some(script) = server.status_value.as_deref().filter(|value| !value.trim().is_empty())
+    else {
+        return ServerStatusSummary {
+            state: "unknown".to_string(),
+            detail: Some("No status script configured".to_string()),
+        };
+    };
+
+    match run_script(script, server.working_dir.as_deref(), "status").await {
+        Ok(result) if result.ok => interpret_script_status(&result.stdout),
+        Ok(result) => ServerStatusSummary {
+            state: "error".to_string(),
+            detail: Some(
+                first_nonempty_line(&result.stderr).unwrap_or_else(|| {
+                    format!(
+                        "status script exited with status {}",
+                        result
+                            .exit_code
+                            .map(|code| code.to_string())
+                            .unwrap_or_else(|| "unknown".to_string())
+                    )
+                }),
+            ),
+        },
+        Err(err) => ServerStatusSummary {
+            state: "error".to_string(),
+            detail: Some(err.to_string()),
+        },
+    }
 }
 
 fn merge_action_results(first: ServerActionResult, second: ServerActionResult) -> ServerActionResult {
@@ -438,6 +525,7 @@ async fn resolve_status(server: &ServerRow) -> ServerStatusSummary {
                 },
             }
         }
+        "script" => resolve_script_status(server).await,
         "tcp" | "http" => ServerStatusSummary {
             state: "unknown".to_string(),
             detail: Some("This status check is not implemented yet".to_string()),
@@ -800,6 +888,26 @@ mod tests {
             validate_status_type(Some("systemd".to_string())).unwrap(),
             Some("systemd".to_string())
         );
+        assert_eq!(
+            validate_status_type(Some("script".to_string())).unwrap(),
+            Some("script".to_string())
+        );
         assert!(validate_status_type(Some("bad".to_string())).is_err());
+    }
+
+    #[test]
+    fn interprets_script_status_output() {
+        let running = interpret_script_status(
+            "=== screen ===\n\n=== Squad process ===\nsquad   1234  0.0  ... SquadGameServer\n\n=== ports ===\nudp   0 0 0.0.0.0:7787 0.0.0.0:* 1234/SquadGameServer\n",
+        );
+        assert_eq!(running.state, "running");
+
+        let stopped = interpret_script_status(
+            "=== screen ===\n\n=== Squad process ===\n\n=== ports ===\n",
+        );
+        assert_eq!(stopped.state, "stopped");
+
+        let generic = interpret_script_status("all quiet");
+        assert_eq!(generic.state, "unknown");
     }
 }
